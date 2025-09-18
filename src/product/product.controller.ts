@@ -268,12 +268,14 @@ export class ProductController {
   @ApiResponse({ status: 400, description: 'Fichier non disponible' })
   @ApiResponse({ status: 401, description: 'Non autorisé' })
   @ApiResponse({ status: 404, description: 'Produit ou fichier non trouvé' })
+  @ApiQuery({ name: 'promoCode', required: false, type: String })
   async downloadFile(
     @Param('id') productId: string,
     @Param('fileId') fileId: string,
+    @Query('promoCode') promoCode: string | undefined,
     @Request() req
   ): Promise<{ success: boolean; downloadUrl: string; message: string }> {
-    const result = await this.productService.downloadFile(productId, fileId, req.user.userId);
+    const result = await this.productService.downloadFile(productId, fileId, req.user.userId, promoCode);
     return { success: true, ...result };
   }
 

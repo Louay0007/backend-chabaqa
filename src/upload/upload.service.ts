@@ -1,7 +1,11 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { extname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { StorageUsage, StorageUsageDocument } from '../schema/storage-usage.schema';
+import { PolicyService } from '../common/services/policy.service';
 
 export enum FileType {
   IMAGE = 'image',
@@ -24,6 +28,7 @@ export interface UploadResult {
 export class UploadService {
   private readonly uploadPath = 'uploads';
   private readonly baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+  private readonly storageUsageMap = new Map<string, number>(); // legacy in-memory (fallback)
 
   // Configuration des types de fichiers autorisés
   private readonly allowedTypes = {
@@ -41,7 +46,10 @@ export class UploadService {
     [FileType.AUDIO]: 20 * 1024 * 1024 // 20MB
   };
 
-  constructor() {
+  constructor(
+    @InjectModel(StorageUsage.name) private storageModel: Model<StorageUsageDocument>,
+    private readonly policyService: PolicyService,
+  ) {
     this.ensureUploadDirectories();
   }
 
@@ -115,6 +123,20 @@ export class UploadService {
     return fileType;
   }
 
+  // Track and enforce storage quotas (DB-backed)
+  private async getUsageBytes(userId: string): Promise<number> {
+    const doc = await this.storageModel.findOne({ userId: new Types.ObjectId(userId) });
+    return doc?.usedBytes || 0;
+  }
+
+  private async addUsageBytes(userId: string, bytes: number): Promise<void> {
+    await this.storageModel.updateOne(
+      { userId: new Types.ObjectId(userId) },
+      { $inc: { usedBytes: bytes } },
+      { upsert: true }
+    );
+  }
+
   /**
    * Générer un nom de fichier unique
    */
@@ -142,8 +164,17 @@ export class UploadService {
   /**
    * Traiter un fichier uploadé
    */
-  processUploadedFile(file: Express.Multer.File, filename: string): UploadResult {
+  async processUploadedFile(file: Express.Multer.File, filename: string, context?: { userId?: string }): Promise<UploadResult> {
     const fileType = this.validateFile(file);
+    if (context?.userId) {
+      const limits = await this.policyService.getEffectiveLimitsForCreator(context.userId);
+      const used = await this.getUsageBytes(context.userId);
+      const limitBytes = limits.storageGB * 1024 * 1024 * 1024;
+      if (used + file.size > limitBytes) {
+        throw new ForbiddenException('Quota de stockage atteint pour votre plan.');
+      }
+      await this.addUsageBytes(context.userId, file.size);
+    }
     const url = this.generateFileUrl(filename, fileType);
 
     return {

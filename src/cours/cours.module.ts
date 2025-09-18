@@ -5,8 +5,12 @@ import { CoursService } from './cours.service';
 import { CoursSchema, CourseEnrollmentSchema, CourseProgressSchema } from '../schema/course.schema';
 import { CommunitySchema } from '../schema/community.schema';
 import { UserSchema } from '../schema/user.schema';
+import { OrderSchema } from '../schema/order.schema';
 import { UploadModule } from '../upload/upload.module';
 import { TrackingModule } from '../common/modules/tracking.module';
+import { PolicyModule } from '../common/modules/policy.module';
+import { FeeModule } from '../common/modules/fee.module';
+import { PromoModule } from '../common/modules/promo.module';
 
 @Module({
   imports: [
@@ -15,10 +19,14 @@ import { TrackingModule } from '../common/modules/tracking.module';
       { name: 'CourseEnrollment', schema: CourseEnrollmentSchema },
       { name: 'CourseProgress', schema: CourseProgressSchema },
       { name: 'Community', schema: CommunitySchema },
-      { name: 'User', schema: UserSchema }
+      { name: 'User', schema: UserSchema },
+      { name: 'Order', schema: OrderSchema }
     ]),
-    UploadModule, // Importer le module upload
-    TrackingModule // Importer le module de tracking
+    UploadModule,
+    TrackingModule,
+    PolicyModule,
+    FeeModule,
+    PromoModule
   ],
   controllers: [CoursController],
   providers: [CoursService],

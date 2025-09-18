@@ -7,6 +7,10 @@ import { User, UserDocument } from '../schema/user.schema';
 import { CreateEventDto, CreateEventSessionDto, CreateEventTicketDto, CreateEventSpeakerDto } from '../dto-event/create-event.dto';
 import { UpdateEventDto } from '../dto-event/update-event.dto';
 import { EventResponseDto, EventListResponseDto, EventStatsResponseDto } from '../dto-event/event-response.dto';
+import { FeeService } from '../common/services/fee.service';
+import { PromoService } from '../common/services/promo.service';
+import { PolicyService } from '../common/services/policy.service';
+import { TrackableContentType } from '../schema/content-tracking.schema';
 
 @Injectable()
 export class EventService {
@@ -14,6 +18,10 @@ export class EventService {
     @InjectModel(Event.name) private eventModel: Model<EventDocument>,
     @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel('Order') private orderModel: Model<any>,
+    private readonly feeService: FeeService,
+    private readonly promoService: PromoService,
+    private readonly policyService: PolicyService,
   ) {}
 
   /**
@@ -49,6 +57,12 @@ export class EventService {
       id: new Types.ObjectId().toString(),
       ...speaker
     })) || [];
+
+    // Gating: require active subscription to publish/activate events
+    const hasSub = await this.policyService.hasActiveSubscription(userId);
+    if (!hasSub && (createEventDto.isActive || createEventDto.isPublished)) {
+      throw new ForbiddenException('Un abonnement actif est requis pour publier ou activer un événement');
+    }
 
     const eventData = {
       ...createEventDto,
@@ -424,7 +438,7 @@ export class EventService {
   /**
    * Inscrire un utilisateur à un événement
    */
-  async registerAttendee(eventId: string, ticketType: string, userId: string): Promise<{ message: string }> {
+  async registerAttendee(eventId: string, ticketType: string, userId: string, promoCode?: string): Promise<{ message: string }> {
     const event = await this.eventModel.findOne({ id: eventId });
     if (!event) {
       throw new NotFoundException('Événement non trouvé');
@@ -461,6 +475,36 @@ export class EventService {
 
     event.attendees.push(attendee);
     ticket.sold += 1;
+    // Si billet payant, appliquer promo et créer une commande avec calcul des frais
+    if (ticket.price && ticket.price > 0) {
+      let effective = ticket.price;
+      let discountDT = 0;
+      let appliedCode: string | undefined;
+      if (promoCode) {
+        const buyer = await this.userModel.findById(userId).select('email');
+      const promo = await this.promoService.validateAndApply(promoCode, ticket.price, TrackableContentType.EVENT, (event as any)._id.toString(), (buyer as any)?.email);
+        if (promo.valid) {
+          effective = promo.finalAmountDT;
+          discountDT = promo.discountDT;
+          appliedCode = promo.appliedCode;
+        }
+      }
+      const breakdown = await this.feeService.calculateForAmount(effective, event.creatorId.toString());
+      await this.orderModel.create({
+        buyerId: new Types.ObjectId(userId),
+        creatorId: event.creatorId,
+        contentType: TrackableContentType.EVENT,
+        contentId: (event as any)._id.toString(),
+        amountDT: breakdown.amountDT,
+        platformPercent: breakdown.platformPercent,
+        platformFixedDT: breakdown.platformFixedDT,
+        platformFeeDT: breakdown.platformFeeDT,
+        creatorNetDT: breakdown.creatorNetDT,
+        promoCode: appliedCode,
+        discountDT,
+        status: 'paid'
+      });
+    }
     await event.save();
 
     return { message: 'Inscription réussie' };

@@ -242,11 +242,12 @@ export class CoursController {
 
 	@UseGuards(JwtAuthGuard)
 	@ApiBearerAuth('JWT-auth')
-	@Post(':id/enroll')
+  @Post(':id/enroll')
 	@ApiOperation({ summary: 'S\'inscrire à un cours' })
-	async enrollToCours(@Param('id') id: string, @Req() req) {
+  @ApiQuery({ name: 'promoCode', required: false, type: String })
+  async enrollToCours(@Param('id') id: string, @Query('promoCode') promoCode: string | undefined, @Req() req) {
 		const user = req.user as AuthenticatedUser;
-		return await this.coursService.inscrireAuCours(id, user._id);
+    return await this.coursService.inscrireAuCours(id, user._id, promoCode);
 	}
 
 	// ============ VÉRIFICATION D'ACCÈS ============

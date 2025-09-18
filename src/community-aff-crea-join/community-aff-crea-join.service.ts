@@ -6,13 +6,21 @@ import { User, UserDocument, UserRole } from '../schema/user.schema';
 import { CreateCommunityDto } from '../dto-community/create-community.dto';
 import { JoinCommunityDto, JoinByInviteDto, GenerateInviteDto } from '../dto-community/join-community.dto';
 import { UploadService } from 'src/upload/upload.service';
+import { PolicyService } from '../common/services/policy.service';
+import { PromoService } from '../common/services/promo.service';
+import { FeeService } from '../common/services/fee.service';
+import { TrackableContentType } from '../schema/content-tracking.schema';
 
 @Injectable()
 export class CommunityAffCreaJoinService {
   constructor(
     @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
-    private readonly uploadService: UploadService
+    @InjectModel('Order') private orderModel: Model<any>,
+    private readonly uploadService: UploadService,
+    private readonly policyService: PolicyService,
+    private readonly promoService: PromoService,
+    private readonly feeService: FeeService,
   ) {}
 
   /**
@@ -41,6 +49,13 @@ export class CommunityAffCreaJoinService {
       
       if (!user) {
         throw new NotFoundException('Utilisateur non trouvé');
+      }
+
+      // Vérifier les quotas: nombre de communautés du créateur
+      const createdCount = await this.communityModel.countDocuments({ createur: new Types.ObjectId(userId) });
+      const canCreate = await this.policyService.canCreateAnotherCommunity(userId, createdCount);
+      if (!canCreate) {
+        throw new ForbiddenException('Limite de communautés atteinte pour votre plan. Veuillez mettre à niveau.');
       }
 
       // Vérifier si une communauté avec ce nom existe déjà
@@ -275,6 +290,125 @@ export class CommunityAffCreaJoinService {
   }
 
   /**
+   * Checkout pour adhésion à une communauté payante
+   */
+  async checkoutCommunityMembership(communityId: string, userId: string, promoCode?: string): Promise<{ message: string }> {
+    const community = await this.communityModel.findById(communityId);
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    if (community.members.includes(new Types.ObjectId(userId))) {
+      return { message: 'Déjà membre de cette communauté' };
+    }
+
+    const price = community.fees_of_join || 0;
+    if (price <= 0) {
+      // Gratuit: ajouter directement
+      community.addMember(new Types.ObjectId(userId));
+      await community.save();
+      await this.userModel.findByIdAndUpdate(userId, { $addToSet: { joinedCommunities: community._id } });
+      return { message: 'Adhésion gratuite réussie' };
+    }
+
+    let effective = price;
+    let discountDT = 0;
+    let appliedCode: string | undefined;
+    if (promoCode) {
+      const buyer = await this.userModel.findById(userId).select('email');
+      const promo = await this.promoService.validateAndApply(promoCode, price, TrackableContentType.COMMUNITY, community._id.toString(), (buyer as any)?.email);
+      if (promo.valid) {
+        effective = promo.finalAmountDT;
+        discountDT = promo.discountDT;
+        appliedCode = promo.appliedCode;
+      }
+    }
+
+    const breakdown = await this.feeService.calculateForAmount(effective, community.createur.toString());
+    await this.orderModel.create({
+      buyerId: new Types.ObjectId(userId),
+      creatorId: community.createur,
+      contentType: TrackableContentType.COMMUNITY,
+      contentId: community._id.toString(),
+      amountDT: breakdown.amountDT,
+      platformPercent: breakdown.platformPercent,
+      platformFixedDT: breakdown.platformFixedDT,
+      platformFeeDT: breakdown.platformFeeDT,
+      creatorNetDT: breakdown.creatorNetDT,
+      promoCode: appliedCode,
+      discountDT,
+      status: 'paid'
+    });
+
+    community.addMember(new Types.ObjectId(userId));
+    await community.save();
+    await this.userModel.findByIdAndUpdate(userId, { $addToSet: { joinedCommunities: community._id } });
+
+    return { message: 'Adhésion achetée avec succès' };
+  }
+
+  /**
+   * Ajouter un administrateur à une communauté avec contrainte AdminsMax
+   */
+  async addAdmin(communityId: string, targetUserId: string, requesterId: string): Promise<{ message: string }> {
+    const community = await this.communityModel.findById(communityId);
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    const isCreator = community.createur.equals(new Types.ObjectId(requesterId));
+    const isAdmin = community.admins.includes(new Types.ObjectId(requesterId));
+    if (!isCreator && !isAdmin) {
+      throw new ForbiddenException('Seuls le créateur ou un administrateur peuvent ajouter un administrateur');
+    }
+
+    const target = await this.userModel.findById(targetUserId);
+    if (!target) {
+      throw new NotFoundException('Utilisateur cible non trouvé');
+    }
+
+    // Enforce AdminsMax according to creator's plan
+    const currentAdminsCount = community.admins.length + 1; // including creator implicitly
+    const canAdd = await this.policyService.canAddAdmin(community.createur.toString(), currentAdminsCount);
+    if (!canAdd) {
+      throw new ForbiddenException('Limite d\'administrateurs atteinte pour le plan du créateur');
+    }
+
+    const targetId = new Types.ObjectId(targetUserId);
+    if (!community.admins.some(a => a.equals(targetId))) {
+      community.admins.push(targetId);
+      await community.save();
+    }
+
+    await this.userModel.findByIdAndUpdate(targetId, { $addToSet: { adminCommunities: community._id } });
+
+    return { message: 'Administrateur ajouté avec succès' };
+  }
+
+  /**
+   * Retirer un administrateur d'une communauté
+   */
+  async removeAdmin(communityId: string, targetUserId: string, requesterId: string): Promise<{ message: string }> {
+    const community = await this.communityModel.findById(communityId);
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    const isCreator = community.createur.equals(new Types.ObjectId(requesterId));
+    if (!isCreator) {
+      throw new ForbiddenException('Seul le créateur peut retirer un administrateur');
+    }
+
+    const targetId = new Types.ObjectId(targetUserId);
+    community.admins = community.admins.filter(a => !a.equals(targetId));
+    await community.save();
+
+    await this.userModel.findByIdAndUpdate(targetId, { $pull: { adminCommunities: community._id } });
+
+    return { message: 'Administrateur retiré avec succès' };
+  }
+
+  /**
    * Obtenir toutes les communautés publiques (pour affichage général)
    * @returns Liste des communautés publiques
    */
@@ -391,6 +525,14 @@ export class CommunityAffCreaJoinService {
         throw new ForbiddenException('Cette communauté n\'est pas active');
       }
 
+      // Enforcer MembersMax du créateur de la communauté
+      const creatorId = community.createur;
+      const currentMembers = community.membersCount || community.members.length;
+      const canAdd = await this.policyService.canAddMember(creatorId.toString(), currentMembers);
+      if (!canAdd) {
+        throw new ForbiddenException('Limite de membres atteinte pour le plan du créateur.');
+      }
+
       // Vérifier si l'utilisateur est déjà membre
       if (community.members.includes(new Types.ObjectId(userId))) {
         throw new ConflictException('Vous êtes déjà membre de cette communauté');
@@ -463,6 +605,14 @@ export class CommunityAffCreaJoinService {
       // Vérifier si la communauté est active
       if (!community.isActive) {
         throw new ForbiddenException('Cette communauté n\'est pas active');
+      }
+
+      // Enforcer MembersMax du créateur de la communauté
+      const creatorId2 = community.createur;
+      const currentMembers2 = community.membersCount || community.members.length;
+      const canAdd2 = await this.policyService.canAddMember(creatorId2.toString(), currentMembers2);
+      if (!canAdd2) {
+        throw new ForbiddenException('Limite de membres atteinte pour le plan du créateur.');
       }
 
       // Vérifier si l'utilisateur est déjà membre

@@ -11,7 +11,9 @@ export enum TrackableContentType {
   POST = 'post',
   EVENT = 'event',
   PRODUCT = 'product',
-  RESOURCE = 'resource'
+  RESOURCE = 'resource',
+  COMMUNITY = 'community'
+  , SUBSCRIPTION = 'subscription'
 }
 
 /**

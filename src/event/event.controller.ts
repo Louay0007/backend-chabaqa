@@ -270,12 +270,14 @@ export class EventController {
   @ApiResponse({ status: 400, description: 'Inscription impossible' })
   @ApiResponse({ status: 401, description: 'Non autorisé' })
   @ApiResponse({ status: 404, description: 'Événement ou type de billet non trouvé' })
+  @ApiQuery({ name: 'promoCode', required: false, type: String })
   async registerAttendee(
     @Param('id') eventId: string,
     @Body('ticketType') ticketType: string,
+    @Query('promoCode') promoCode: string | undefined,
     @Request() req
   ): Promise<{ success: boolean; message: string }> {
-    const result = await this.eventService.registerAttendee(eventId, ticketType, req.user.userId);
+    const result = await this.eventService.registerAttendee(eventId, ticketType, req.user.userId, promoCode);
     return { success: true, ...result };
   }
 

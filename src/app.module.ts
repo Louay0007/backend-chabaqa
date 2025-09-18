@@ -28,7 +28,22 @@ import { SessionModule } from './session/session.module';
 import { PostModule } from './post/post.module';
 import { EventModule } from './event/event.module';
 import { TrackingModule } from './common/modules/tracking.module';
+import { PolicyModule } from './common/modules/policy.module';
+import { FeeModule } from './common/modules/fee.module';
+import { PromoModule } from './common/modules/promo.module';
+import { SubscriptionModule } from './subscription/subscription.module';
+import { StorageUsage, StorageUsageSchema } from './schema/storage-usage.schema';
 import { TrackingController } from './common/controllers/tracking.controller';
+import { PaymentController } from './common/controllers/payment.controller';
+import { SubscriptionService } from './subscription/subscription.service';
+import { Plan, PlanSchema } from './schema/plan.schema';
+import { OrderSchema } from './schema/order.schema';
+import { CoursSchema } from './schema/course.schema';
+import { ChallengeSchema } from './schema/challenge.schema';
+import { EventSchema } from './schema/event.schema';
+import { ProductSchema } from './schema/product.schema';
+import { SessionSchema } from './schema/session.schema';
+import { FlouciModule } from './common/modules/flouci.module';
 
 @Module({
   imports: [
@@ -74,7 +89,15 @@ import { TrackingController } from './common/controllers/tracking.controller';
       { name: User.name, schema: UserSchema },
       { name: VerificationCode.name, schema: VerificationCodeSchema },
       { name: RevokedToken.name, schema: RevokedTokenSchema },
-      { name: Community.name, schema: CommunitySchema }
+      { name: Community.name, schema: CommunitySchema },
+      { name: StorageUsage.name, schema: StorageUsageSchema },
+      { name: Plan.name, schema: PlanSchema },
+      { name: 'Order', schema: OrderSchema },
+      { name: 'Cours', schema: CoursSchema },
+      { name: 'Challenge', schema: ChallengeSchema },
+      { name: 'Event', schema: EventSchema },
+      { name: 'Product', schema: ProductSchema },
+      { name: 'Session', schema: SessionSchema },
     ]),
     AuthModule,
     CommunityAffCreaJoinModule,
@@ -89,8 +112,13 @@ import { TrackingController } from './common/controllers/tracking.controller';
     PostModule,
     EventModule,
     TrackingModule,
+    PolicyModule,
+    SubscriptionModule,
+    FeeModule,
+    PromoModule,
+    FlouciModule,
   ],
-  controllers: [AppController, UserController, TrackingController],
+  controllers: [AppController, UserController, TrackingController, PaymentController],
   providers: [AppService, UserService, EmailService],
   exports: [EmailService],
 })

@@ -118,12 +118,14 @@ export class SessionController {
   @ApiResponse({ status: 201, description: 'Session réservée avec succès', type: SessionResponseDto })
   @ApiResponse({ status: 400, description: 'Impossible de réserver la session' })
   @ApiResponse({ status: 404, description: 'Session non trouvée' })
+  @ApiQuery({ name: 'promoCode', required: false, type: String })
   async bookSession(
     @Param('id') sessionId: string,
     @Body() bookSessionDto: BookSessionDto,
+    @Query('promoCode') promoCode: string | undefined,
     @Request() req: any
   ): Promise<SessionResponseDto> {
-    return this.sessionService.bookSession(sessionId, bookSessionDto, req.user.userId);
+    return this.sessionService.bookSession(sessionId, bookSessionDto, req.user.userId, promoCode);
   }
 
   @Patch('bookings/:bookingId/confirm')

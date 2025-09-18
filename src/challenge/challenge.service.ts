@@ -17,6 +17,8 @@ import {
   ChallengeAccessResponseDto
 } from '../dto-challenge/challenge-pricing.dto';
 import { ContentTrackingService } from '../common/services/content-tracking.service';
+import { FeeService } from '../common/services/fee.service';
+import { PolicyService } from '../common/services/policy.service';
 import { TrackableContentType } from '../schema/content-tracking.schema';
 
 @Injectable()
@@ -26,6 +28,8 @@ export class ChallengeService {
     @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly trackingService: ContentTrackingService,
+    private readonly feeService: FeeService,
+    private readonly policyService: PolicyService,
   ) {}
 
   /**
@@ -53,6 +57,12 @@ export class ChallengeService {
 
     // Générer un ID unique pour le défi
     const challengeId = new Types.ObjectId().toString();
+
+    // Gating: require active subscription to activate premium or active challenges
+    const hasSub = await this.policyService.hasActiveSubscription(creatorId);
+    if (!hasSub && (createChallengeDto.isActive || createChallengeDto.isPremium)) {
+      throw new ForbiddenException('Un abonnement actif est requis pour activer ou lancer un défi');
+    }
 
     // Créer le défi
     const challenge = new this.challengeModel({
@@ -303,6 +313,24 @@ export class ChallengeService {
     // Vérifier que l'utilisateur n'est pas déjà participant
     if (challenge.isParticipant(new Types.ObjectId(userId))) {
       throw new BadRequestException('Vous êtes déjà participant à ce défi');
+    }
+
+    // Si participation payante, créer un order avec fees
+    const price = challenge.pricing?.participationFee || 0;
+    if (price > 0) {
+      const breakdown = await this.feeService.calculateForAmount(price, challenge.creatorId.toString());
+      await (this.challengeModel as any).db.model('Order').create({
+        buyerId: new Types.ObjectId(userId),
+        creatorId: challenge.creatorId,
+        contentType: TrackableContentType.CHALLENGE,
+        contentId: challenge._id.toString(),
+        amountDT: breakdown.amountDT,
+        platformPercent: breakdown.platformPercent,
+        platformFixedDT: breakdown.platformFixedDT,
+        platformFeeDT: breakdown.platformFeeDT,
+        creatorNetDT: breakdown.creatorNetDT,
+        status: 'paid'
+      });
     }
 
     // Ajouter le participant

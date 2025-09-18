@@ -20,13 +20,15 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiParam, 
-  ApiConsumes
+  ApiConsumes,
+  ApiQuery
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CommunityAffCreaJoinService } from './community-aff-crea-join.service';
 import { CreateCommunityDto } from '../dto-community/create-community.dto';
 import { JoinCommunityDto, JoinByInviteDto, GenerateInviteDto } from '../dto-community/join-community.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Query } from '@nestjs/common';
 import { FileType, UploadService } from 'src/upload/upload.service';
 
 @ApiTags('Community Management')
@@ -47,7 +49,7 @@ export class CommunityAffCreaJoinController {
 @Post('create')
 @HttpCode(HttpStatus.CREATED)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
-@UseInterceptors(FileInterceptor('logo', new UploadService().getMulterOptions(FileType.IMAGE)))
+@UseInterceptors(FileInterceptor('logo'))
 @ApiConsumes('multipart/form-data')
 @ApiOperation({
   summary: 'Créer une nouvelle communauté',
@@ -167,7 +169,7 @@ async createCommunity(
       fs.renameSync(file.path, finalPath);
 
       // Générer l’URL publique
-      const result = this.uploadService.processUploadedFile(
+      const result = await this.uploadService.processUploadedFile(
         { ...file, path: finalPath }, 
         filename
       );
@@ -800,5 +802,48 @@ async createCommunity(
     } catch (error) {
       throw error;
     }
+  }
+
+  /**
+   * Acheter une adhésion à une communauté (paid community)
+   * Route: POST /community-aff-crea-join/:id/checkout
+   */
+  @Post(':id/checkout')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Acheter l\'adhésion à une communauté (paid community)' })
+  @ApiQuery({ name: 'promoCode', required: false, type: String })
+  async checkoutCommunity(
+    @Param('id') communityId: string,
+    @Query('promoCode') promoCode: string | undefined,
+    @Request() req: any
+  ) {
+    const result = await this.communityService.checkoutCommunityMembership(communityId, req.user._id, promoCode);
+    return { success: true, ...result };
+  }
+
+  /**
+   * Ajouter un administrateur à une communauté
+   * Route: POST /community-aff-crea-join/:id/admins/:userId
+   */
+  @Post(':id/admins/:userId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Ajouter un administrateur à une communauté' })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Administrateur ajouté' })
+  async addAdmin(@Param('id') communityId: string, @Param('userId') userId: string, @Request() req: any) {
+    const result = await this.communityService.addAdmin(communityId, userId, req.user._id);
+    return { success: true, ...result };
+  }
+
+  /**
+   * Retirer un administrateur d'une communauté
+   * Route: POST /community-aff-crea-join/:id/admins/:userId/remove
+   */
+  @Post(':id/admins/:userId/remove')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Retirer un administrateur d\'une communauté' })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Administrateur retiré' })
+  async removeAdmin(@Param('id') communityId: string, @Param('userId') userId: string, @Request() req: any) {
+    const result = await this.communityService.removeAdmin(communityId, userId, req.user._id);
+    return { success: true, ...result };
   }
 }

@@ -122,7 +122,9 @@ export class UploadController {
     console.log(`   🏷️ Type MIME: ${file.mimetype}`);
 
     try {
-      const result = this.uploadService.processUploadedFile(file, file.filename);
+      const reqAny = (arguments as any)[0]; // controller context workaround
+      const userId = (reqAny as any)?.user?._id || (reqAny as any)?.user?.sub;
+      const result = await this.uploadService.processUploadedFile(file, file.filename, { userId });
       
       return {
         filename: result.filename,
@@ -158,7 +160,9 @@ export class UploadController {
       throw new BadRequestException('Le fichier doit être une image');
     }
 
-    const result = this.uploadService.processUploadedFile(file, file.filename);
+    const reqAny = (arguments as any)[0];
+    const userId = (reqAny as any)?.user?._id || (reqAny as any)?.user?.sub;
+    const result = await this.uploadService.processUploadedFile(file, file.filename, { userId });
     
     return {
       filename: result.filename,
@@ -190,7 +194,9 @@ export class UploadController {
       throw new BadRequestException('Le fichier doit être une vidéo');
     }
 
-    const result = this.uploadService.processUploadedFile(file, file.filename);
+    const reqAny = (arguments as any)[0];
+    const userId = (reqAny as any)?.user?._id || (reqAny as any)?.user?.sub;
+    const result = await this.uploadService.processUploadedFile(file, file.filename, { userId });
     
     return {
       filename: result.filename,
@@ -222,7 +228,9 @@ export class UploadController {
       throw new BadRequestException('Le fichier doit être un document');
     }
 
-    const result = this.uploadService.processUploadedFile(file, file.filename);
+    const reqAny = (arguments as any)[0];
+    const userId = (reqAny as any)?.user?._id || (reqAny as any)?.user?.sub;
+    const result = await this.uploadService.processUploadedFile(file, file.filename, { userId });
     
     return {
       filename: result.filename,
@@ -258,7 +266,9 @@ export class UploadController {
 
     for (const file of files) {
       try {
-        const result = this.uploadService.processUploadedFile(file, file.filename);
+        const reqAny = (arguments as any)[0];
+        const userId = (reqAny as any)?.user?._id || (reqAny as any)?.user?.sub;
+        const result = await this.uploadService.processUploadedFile(file, file.filename, { userId });
         results.push({
           filename: result.filename,
           originalName: result.originalName,

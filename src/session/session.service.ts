@@ -8,6 +8,10 @@ import { CreateSessionDto } from '../dto-session/create-session.dto';
 import { UpdateSessionDto } from '../dto-session/update-session.dto';
 import { BookSessionDto, ConfirmBookingDto, CancelBookingDto, CompleteSessionDto, UpdateBookingStatusDto } from '../dto-session/book-session.dto';
 import { SessionResponseDto, SessionListResponseDto, UserBookingsResponseDto, CreatorBookingsResponseDto } from '../dto-session/session-response.dto';
+import { PromoService } from '../common/services/promo.service';
+import { PolicyService } from '../common/services/policy.service';
+import { FeeService } from '../common/services/fee.service';
+import { TrackableContentType } from '../schema/content-tracking.schema';
 
 @Injectable()
 export class SessionService {
@@ -15,6 +19,10 @@ export class SessionService {
     @InjectModel(Session.name) private sessionModel: Model<SessionDocument>,
     @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel('Order') private orderModel: Model<any>,
+    private readonly feeService: FeeService,
+    private readonly promoService: PromoService,
+    private readonly policyService: PolicyService,
   ) {}
 
   /**
@@ -34,6 +42,12 @@ export class SessionService {
 
     // Générer un ID unique pour la session
     const sessionId = new Types.ObjectId().toString();
+
+    // Gating: require active subscription to activate sessions
+    const hasSub = await this.policyService.hasActiveSubscription(creatorId);
+    if (!hasSub && createSessionDto.isActive) {
+      throw new ForbiddenException('Un abonnement actif est requis pour activer une session');
+    }
 
     // Créer la session
     const session = new this.sessionModel({
@@ -206,7 +220,7 @@ export class SessionService {
   /**
    * Réserver une session
    */
-  async bookSession(sessionId: string, bookSessionDto: BookSessionDto, userId: string): Promise<SessionResponseDto> {
+  async bookSession(sessionId: string, bookSessionDto: BookSessionDto, userId: string, promoCode?: string): Promise<SessionResponseDto> {
     const session = await this.sessionModel.findOne({ id: sessionId });
     if (!session) {
       throw new NotFoundException('Session non trouvée');
@@ -251,6 +265,36 @@ export class SessionService {
     };
 
     session.addBooking(booking);
+    // Si la session est payante, appliquer promo puis créer une commande avec calcul des frais
+    if (session.price && session.price > 0) {
+      let effective = session.price;
+      let discountDT = 0;
+      let appliedCode: string | undefined;
+      if (promoCode) {
+        const buyer = await this.userModel.findById(userId).select('email');
+        const promo = await this.promoService.validateAndApply(promoCode, session.price, TrackableContentType.SESSION, session._id.toString(), (buyer as any)?.email);
+        if (promo.valid) {
+          effective = promo.finalAmountDT;
+          discountDT = promo.discountDT;
+          appliedCode = promo.appliedCode;
+        }
+      }
+      const breakdown = await this.feeService.calculateForAmount(effective, session.creatorId.toString());
+      await this.orderModel.create({
+        buyerId: new Types.ObjectId(userId),
+        creatorId: session.creatorId,
+        contentType: TrackableContentType.SESSION,
+        contentId: session._id.toString(),
+        amountDT: breakdown.amountDT,
+        platformPercent: breakdown.platformPercent,
+        platformFixedDT: breakdown.platformFixedDT,
+        platformFeeDT: breakdown.platformFeeDT,
+        creatorNetDT: breakdown.creatorNetDT,
+        promoCode: appliedCode,
+        discountDT,
+        status: 'paid'
+      });
+    }
     await session.save();
 
     const community = await this.communityModel.findOne({ id: session.communityId });

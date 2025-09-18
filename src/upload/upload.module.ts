@@ -1,13 +1,20 @@
 import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
 import { MulterModule } from '@nestjs/platform-express';
 import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
+import { PolicyModule } from '../common/modules/policy.module';
+import { StorageUsage, StorageUsageSchema } from '../schema/storage-usage.schema';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 @Module({
   imports: [
+    MongooseModule.forFeature([
+      { name: StorageUsage.name, schema: StorageUsageSchema },
+    ]),
+    PolicyModule,
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {

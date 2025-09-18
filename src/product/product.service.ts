@@ -13,6 +13,10 @@ import {
   ProductVariantResponseDto,
   ProductFileResponseDto
 } from '../dto-product/product-response.dto';
+import { FeeService } from '../common/services/fee.service';
+import { TrackableContentType } from '../schema/content-tracking.schema';
+import { PolicyService } from '../common/services/policy.service';
+import { PromoService } from '../common/services/promo.service';
 
 @Injectable()
 export class ProductService {
@@ -20,6 +24,10 @@ export class ProductService {
     @InjectModel(Product.name) private productModel: Model<ProductDocument>,
     @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel('Order') private orderModel: Model<any>,
+    private readonly feeService: FeeService,
+    private readonly policyService: PolicyService,
+    private readonly promoService: PromoService,
   ) {}
 
   /**
@@ -165,6 +173,14 @@ export class ProductService {
     // Vérifier que l'utilisateur est le créateur du produit
     if (product.creatorId.toString() !== userId) {
       throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    // Gating: require active subscription to activate/publish product (if fields exist)
+    const hasSub = await this.policyService.hasActiveSubscription(userId);
+    const nextIsPublished = (updateProductDto as any)?.isPublished;
+    const nextIsActive = (updateProductDto as any)?.isActive;
+    if (!hasSub && (nextIsPublished || nextIsActive)) {
+      throw new ForbiddenException('Un abonnement actif est requis pour publier/activer un produit');
     }
 
     // Mettre à jour le produit
@@ -425,7 +441,7 @@ export class ProductService {
   /**
    * Télécharger un fichier de produit (incrémente le compteur)
    */
-  async downloadFile(productId: string, fileId: string, userId: string): Promise<{ downloadUrl: string; message: string }> {
+  async downloadFile(productId: string, fileId: string, userId: string, promoCode?: string): Promise<{ downloadUrl: string; message: string }> {
     const product = await this.productModel.findOne({ id: productId });
     if (!product) {
       throw new NotFoundException('Produit non trouvé');
@@ -440,6 +456,37 @@ export class ProductService {
       throw new BadRequestException('Ce fichier n\'est plus disponible');
     }
 
+    // Enregistrer une commande si fichier payant (produit numérique) avec application promo puis incrémenter le compteur
+    const price = product.price || 0;
+    if (product.type === 'digital' && price > 0) {
+      let effective = price;
+      let discountDT = 0;
+      let appliedCode: string | undefined;
+      if (promoCode) {
+        const buyer = await this.userModel.findById(userId).select('email');
+        const promo = await this.promoService.validateAndApply(promoCode, price, TrackableContentType.PRODUCT, product._id.toString(), (buyer as any)?.email);
+        if (promo.valid) {
+          effective = promo.finalAmountDT;
+          discountDT = promo.discountDT;
+          appliedCode = promo.appliedCode;
+        }
+      }
+      const breakdown = await this.feeService.calculateForAmount(effective, product.creatorId.toString());
+      await this.orderModel.create({
+        buyerId: new Types.ObjectId(userId),
+        creatorId: product.creatorId,
+        contentType: TrackableContentType.PRODUCT,
+        contentId: product._id.toString(),
+        amountDT: breakdown.amountDT,
+        platformPercent: breakdown.platformPercent,
+        platformFixedDT: breakdown.platformFixedDT,
+        platformFeeDT: breakdown.platformFeeDT,
+        creatorNetDT: breakdown.creatorNetDT,
+        promoCode: appliedCode,
+        discountDT,
+        status: 'paid'
+      });
+    }
     // Incrémenter le compteur de téléchargements
     file.downloadCount += 1;
     await product.save();

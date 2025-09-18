@@ -10,7 +10,10 @@ import { CoursResponseDto, ChapitreResponseDto } from '../dto-cours/cours-respon
 import { AddSectionDto } from '../dto-cours/add-section.dto';
 import { AddChapitreToSectionDto } from '../dto-cours/add-chapitre-to-section.dto';
 import { ContentTrackingService } from '../common/services/content-tracking.service';
+import { PolicyService } from '../common/services/policy.service';
 import { TrackableContentType } from '../schema/content-tracking.schema';
+import { FeeService } from '../common/services/fee.service';
+import { PromoService } from '../common/services/promo.service';
 
 @Injectable()
 export class CoursService {
@@ -20,7 +23,11 @@ export class CoursService {
     @InjectModel('CourseProgress') private courseProgressModel: Model<CourseProgressDocument>,
     @InjectModel('Community') private communityModel: Model<CommunityDocument>,
     @InjectModel('User') private userModel: Model<UserDocument>,
+    @InjectModel('Order') private orderModel: Model<any>,
     private readonly trackingService: ContentTrackingService,
+    private readonly policyService: PolicyService,
+    private readonly feeService: FeeService,
+    private readonly promoService: PromoService,
   ) {}
 
   /**
@@ -133,6 +140,13 @@ export class CoursService {
     
     // Vérifier les permissions d'admin
     const community = await this.verifierAdminCommunaute(userId, createCoursDto.communitySlug);
+
+    // Policy: limiter l'activation/création de cours par plan (count cours de ce créateur)
+    const activeCoursesCount = await this.coursModel.countDocuments({ creatorId: new Types.ObjectId(userId) });
+    const canCreate = await this.policyService.canActivateMoreCourses(userId, activeCoursesCount);
+    if (!canCreate) {
+      throw new ForbiddenException('Limite de cours atteinte pour votre plan. Veuillez mettre à niveau.');
+    }
 
     // Vérifier que l'utilisateur existe
     const user = await this.userModel.findById(userId);
@@ -1484,7 +1498,24 @@ export class CoursService {
         };
       }
 
-      // 4. Si le chapitre est payant, vérifier l'inscription au cours
+      // 4. Si le cours est gratuit, accorder l'accès aux membres de la communauté sans inscription
+      if ((cours.prix || 0) === 0) {
+        const community = await this.communityModel.findById(cours.communityId);
+        if (community) {
+          const isMember = community.members.some(m => m.equals(new Types.ObjectId(userId))) || community.createur.equals(new Types.ObjectId(userId)) || community.admins.some(a => a.equals(new Types.ObjectId(userId)));
+          if (isMember) {
+            console.log('   ✅ Accès autorisé - Cours gratuit pour les membres de la communauté');
+            return {
+              canAccess: true,
+              isPaidChapter: true,
+              chapterPrice: chapitre.prix,
+              needsPayment: false
+            };
+          }
+        }
+      }
+
+      // 5. Si le chapitre est payant, vérifier l'inscription au cours
       const inscription = await this.courseEnrollmentModel.findOne({
         userId: new Types.ObjectId(userId),
         courseId: new Types.ObjectId(coursId),
@@ -1502,7 +1533,7 @@ export class CoursService {
         };
       }
 
-      // 5. Vérifier si l'utilisateur a payé pour ce chapitre spécifique
+      // 6. Vérifier si l'utilisateur a payé pour ce chapitre spécifique
       // (Pour l'instant, on considère que l'inscription au cours donne accès à tous les chapitres)
       // Dans une implémentation plus avancée, on pourrait avoir un système de paiement par chapitre
       console.log('   ✅ Accès autorisé - Inscrit au cours');
@@ -1529,7 +1560,7 @@ export class CoursService {
    * @param userId ID de l'utilisateur
    * @returns Message de confirmation
    */
-  async inscrireAuCours(coursId: string, userId: string): Promise<{ message: string; enrollment: any }> {
+  async inscrireAuCours(coursId: string, userId: string, promoCode?: string): Promise<{ message: string; enrollment: any }> {
     console.log('🔧 DEBUG - Début inscrireAuCours');
     console.log(`   📋 Cours ID: ${coursId}`);
     console.log(`   👤 User ID: ${userId}`);
@@ -1548,24 +1579,42 @@ export class CoursService {
       console.log(`   ✅ Cours trouvé: ${cours.titre}`);
       console.log(`   🏢 Community ID: ${cours.communityId}`);
 
-      // 2. Vérifier que l'utilisateur est membre de la communauté
-      const community = await this.communityModel.findById(cours.communityId);
-      if (!community) {
-        throw new NotFoundException('Communauté du cours non trouvée');
-      }
-
+      // 2. Standalone purchase: pas d'obligation d'appartenir à la communauté
       const userObjectId = new Types.ObjectId(userId);
-      const estCreateur = community.createur.equals(userObjectId);
-      const estAdmin = community.admins.some(adminId => adminId.equals(userObjectId));
-      const estMembre = community.members.some(memberId => memberId.equals(userObjectId));
+      console.log('   ✅ Standalone enrollment autorisé (pas d\'exigence de membership)');
 
-      if (!estCreateur && !estAdmin && !estMembre) {
-        throw new ForbiddenException('Vous devez être membre de la communauté pour vous inscrire à ce cours');
+      // 3. Si cours payant, appliquer promo et calculer la commission
+      if (cours.prix > 0) {
+        let effective = cours.prix;
+        let discountDT = 0;
+        let appliedCode: string | undefined;
+        const buyer = await this.userModel.findById(userId).select('email');
+        if (promoCode) {
+          const promo = await this.promoService.validateAndApply(promoCode, cours.prix, TrackableContentType.COURSE, cours._id.toString(), buyer?.email || undefined);
+          if (promo.valid) {
+            effective = promo.finalAmountDT;
+            discountDT = promo.discountDT;
+            appliedCode = promo.appliedCode;
+          }
+        }
+        const breakdown = await this.feeService.calculateForAmount(effective, cours.creatorId.toString());
+        await this.orderModel.create({
+          buyerId: userObjectId,
+          creatorId: cours.creatorId,
+          contentType: TrackableContentType.COURSE,
+          contentId: cours._id.toString(),
+          amountDT: breakdown.amountDT,
+          platformPercent: breakdown.platformPercent,
+          platformFixedDT: breakdown.platformFixedDT,
+          platformFeeDT: breakdown.platformFeeDT,
+          creatorNetDT: breakdown.creatorNetDT,
+          promoCode: appliedCode,
+          discountDT,
+          status: 'paid'
+        });
       }
 
-      console.log('   ✅ Utilisateur autorisé (membre de la communauté)');
-
-      // 3. Vérifier si l'utilisateur n'est pas déjà inscrit
+      // 4. Vérifier si l'utilisateur n'est pas déjà inscrit
       const inscriptionExistante = await this.courseEnrollmentModel.findOne({
         userId: userObjectId,
         courseId: new Types.ObjectId(coursId),
@@ -1578,7 +1627,7 @@ export class CoursService {
 
       console.log('   ✅ Aucune inscription existante trouvée');
 
-      // 4. Créer la nouvelle inscription
+      // 5. Créer la nouvelle inscription
       const nouvelleInscription = new this.courseEnrollmentModel({
         id: new Types.ObjectId().toString(),
         userId: userObjectId,
@@ -1592,7 +1641,8 @@ export class CoursService {
 
       console.log(`   ✅ Inscription créée: ${inscriptionEnregistree._id}`);
 
-      // 5. Ajouter la référence de l'inscription au cours
+      // 6. Ajouter la référence de l'inscription au cours
+      // 6. Ajouter la référence de l'inscription au cours
       cours.ajouterInscription(inscriptionEnregistree._id);
       await cours.save();
 
