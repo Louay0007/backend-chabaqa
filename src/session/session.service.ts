@@ -1,0 +1,543 @@
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Session, SessionDocument } from '../schema/session.schema';
+import { Community, CommunityDocument } from '../schema/community.schema';
+import { User, UserDocument } from '../schema/user.schema';
+import { CreateSessionDto } from '../dto-session/create-session.dto';
+import { UpdateSessionDto } from '../dto-session/update-session.dto';
+import { BookSessionDto, ConfirmBookingDto, CancelBookingDto, CompleteSessionDto, UpdateBookingStatusDto } from '../dto-session/book-session.dto';
+import { SessionResponseDto, SessionListResponseDto, UserBookingsResponseDto, CreatorBookingsResponseDto } from '../dto-session/session-response.dto';
+
+@Injectable()
+export class SessionService {
+  constructor(
+    @InjectModel(Session.name) private sessionModel: Model<SessionDocument>,
+    @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+  ) {}
+
+  /**
+   * Créer une nouvelle session
+   */
+  async create(createSessionDto: CreateSessionDto, creatorId: string): Promise<SessionResponseDto> {
+    // Vérifier que la communauté existe
+    const community = await this.communityModel.findOne({ slug: createSessionDto.communitySlug });
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la communauté
+    if (community.createur?.toString() !== creatorId) {
+      throw new ForbiddenException('Seul le créateur de la communauté peut créer des sessions');
+    }
+
+    // Générer un ID unique pour la session
+    const sessionId = new Types.ObjectId().toString();
+
+    // Créer la session
+    const session = new this.sessionModel({
+      id: sessionId,
+      title: createSessionDto.title,
+      description: createSessionDto.description,
+      duration: createSessionDto.duration,
+      price: createSessionDto.price,
+      currency: createSessionDto.currency,
+      communityId: community.id,
+      creatorId: new Types.ObjectId(creatorId),
+      isActive: createSessionDto.isActive ?? true,
+      category: createSessionDto.category,
+      maxBookingsPerWeek: createSessionDto.maxBookingsPerWeek,
+      notes: createSessionDto.notes,
+      resources: createSessionDto.resources || [],
+    });
+
+    const savedSession = await session.save();
+    return this.transformToResponseDto(savedSession, community);
+  }
+
+  /**
+   * Récupérer toutes les sessions avec pagination et filtres
+   */
+  async findAll(
+    page: number = 1,
+    limit: number = 10,
+    communitySlug?: string,
+    category?: string,
+    isActive?: boolean,
+    creatorId?: string
+  ): Promise<SessionListResponseDto> {
+    const query: any = {};
+
+    // Filtres
+    if (communitySlug) {
+      const community = await this.communityModel.findOne({ slug: communitySlug });
+      if (community) {
+        query.communityId = community.id;
+      }
+    }
+
+    if (category) {
+      query.category = category;
+    }
+
+    if (isActive !== undefined) {
+      query.isActive = isActive;
+    }
+
+    if (creatorId) {
+      query.creatorId = new Types.ObjectId(creatorId);
+    }
+
+    // Pagination
+    const skip = (page - 1) * limit;
+
+    const [sessions, total] = await Promise.all([
+      this.sessionModel
+        .find(query)
+        .populate('creatorId', 'name email profile_picture')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+      this.sessionModel.countDocuments(query)
+    ]);
+
+    // Récupérer les communautés pour chaque session
+    const communityIds = [...new Set(sessions.map(s => s.communityId))];
+    const communities = await this.communityModel.find({ id: { $in: communityIds } });
+
+    const sessionResponses = await Promise.all(
+      sessions.map(session => {
+        const community = communities.find(c => c.id === session.communityId);
+        return this.transformToResponseDto(session, community || undefined);
+      })
+    );
+
+    return {
+      sessions: sessionResponses,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
+  }
+
+  /**
+   * Récupérer une session par son ID
+   */
+  async findOne(id: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel
+      .findOne({ id })
+      .populate('creatorId', 'name email profile_picture')
+      .exec();
+
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    return this.transformToResponseDto(session, community);
+  }
+
+  /**
+   * Récupérer les sessions d'une communauté
+   */
+  async findByCommunity(communitySlug: string): Promise<SessionResponseDto[]> {
+    const community = await this.communityModel.findOne({ slug: communitySlug });
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    const sessions = await this.sessionModel
+      .find({ communityId: community.id })
+      .populate('creatorId', 'name email profile_picture')
+      .sort({ createdAt: -1 })
+      .exec();
+
+    return Promise.all(
+      sessions.map(session => this.transformToResponseDto(session, community))
+    );
+  }
+
+  /**
+   * Mettre à jour une session
+   */
+  async update(id: string, updateSessionDto: UpdateSessionDto, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ id });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut la modifier');
+    }
+
+    // Mettre à jour la session
+    Object.assign(session, updateSessionDto);
+    const updatedSession = await session.save();
+    
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(updatedSession, community || undefined);
+  }
+
+  /**
+   * Supprimer une session
+   */
+  async remove(id: string, userId: string): Promise<void> {
+    const session = await this.sessionModel.findOne({ id });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut la supprimer');
+    }
+
+    await this.sessionModel.deleteOne({ id });
+  }
+
+  /**
+   * Réserver une session
+   */
+  async bookSession(sessionId: string, bookSessionDto: BookSessionDto, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que la session est active
+    if (!session.isActive) {
+      throw new BadRequestException('Cette session n\'est plus active');
+    }
+
+    // Vérifier que l'utilisateur n'est pas le créateur
+    if (session.creatorId.toString() === userId) {
+      throw new BadRequestException('Vous ne pouvez pas réserver votre propre session');
+    }
+
+    const scheduledAt = new Date(bookSessionDto.scheduledAt);
+
+    // Vérifier que la date est dans le futur
+    if (scheduledAt <= new Date()) {
+      throw new BadRequestException('La date de la session doit être dans le futur');
+    }
+
+    // Vérifier la disponibilité
+    if (!session.isTimeSlotAvailable(scheduledAt)) {
+      throw new BadRequestException('Ce créneau horaire n\'est pas disponible');
+    }
+
+    // Vérifier la limite hebdomadaire
+    if (!session.canBookMore()) {
+      throw new BadRequestException('Limite de réservations hebdomadaires atteinte');
+    }
+
+    // Créer la réservation
+    const booking = {
+      id: new Types.ObjectId().toString(),
+      userId: new Types.ObjectId(userId),
+      scheduledAt: scheduledAt,
+      status: 'pending' as const,
+      notes: bookSessionDto.notes,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    session.addBooking(booking);
+    await session.save();
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(session, community || undefined);
+  }
+
+  /**
+   * Confirmer une réservation
+   */
+  async confirmBooking(bookingId: string, confirmBookingDto: ConfirmBookingDto, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ 'bookings.id': bookingId });
+    if (!session) {
+      throw new NotFoundException('Réservation non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut confirmer les réservations');
+    }
+
+    const booking = session.getBooking(bookingId);
+    if (!booking) {
+      throw new NotFoundException('Réservation non trouvée');
+    }
+
+    if (booking.status !== 'pending') {
+      throw new BadRequestException('Cette réservation ne peut pas être confirmée');
+    }
+
+    // Mettre à jour la réservation
+    booking.status = 'confirmed';
+    booking.meetingUrl = confirmBookingDto.meetingUrl;
+    if (confirmBookingDto.notes) {
+      booking.notes = confirmBookingDto.notes;
+    }
+    booking.updatedAt = new Date();
+
+    await session.save();
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(session, community || undefined);
+  }
+
+  /**
+   * Annuler une réservation
+   */
+  async cancelBooking(bookingId: string, cancelBookingDto: CancelBookingDto, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ 'bookings.id': bookingId });
+    if (!session) {
+      throw new NotFoundException('Réservation non trouvée');
+    }
+
+    const booking = session.getBooking(bookingId);
+    if (!booking) {
+      throw new NotFoundException('Réservation non trouvée');
+    }
+
+    // Vérifier que l'utilisateur peut annuler (créateur ou utilisateur de la réservation)
+    if (session.creatorId.toString() !== userId && booking.userId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez pas annuler cette réservation');
+    }
+
+    if (booking.status === 'cancelled') {
+      throw new BadRequestException('Cette réservation est déjà annulée');
+    }
+
+    if (booking.status === 'completed') {
+      throw new BadRequestException('Cette réservation est déjà terminée');
+    }
+
+    // Mettre à jour la réservation
+    booking.status = 'cancelled';
+    if (cancelBookingDto.reason) {
+      booking.notes = cancelBookingDto.reason;
+    }
+    booking.updatedAt = new Date();
+
+    await session.save();
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(session, community || undefined);
+  }
+
+  /**
+   * Marquer une session comme terminée
+   */
+  async completeSession(bookingId: string, completeSessionDto: CompleteSessionDto, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ 'bookings.id': bookingId });
+    if (!session) {
+      throw new NotFoundException('Réservation non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut la marquer comme terminée');
+    }
+
+    const booking = session.getBooking(bookingId);
+    if (!booking) {
+      throw new NotFoundException('Réservation non trouvée');
+    }
+
+    if (booking.status !== 'confirmed') {
+      throw new BadRequestException('Seules les réservations confirmées peuvent être marquées comme terminées');
+    }
+
+    // Mettre à jour la réservation
+    booking.status = 'completed';
+    if (completeSessionDto.notes) {
+      booking.notes = completeSessionDto.notes;
+    }
+    booking.updatedAt = new Date();
+
+    await session.save();
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(session, community || undefined);
+  }
+
+  /**
+   * Récupérer les réservations d'un utilisateur
+   */
+  async getUserBookings(userId: string): Promise<UserBookingsResponseDto> {
+    const sessions = await this.sessionModel
+      .find({ 'bookings.userId': new Types.ObjectId(userId) })
+      .populate('creatorId', 'name email profile_picture')
+      .exec();
+
+    interface BookingWithSession {
+      id: string;
+      userId: Types.ObjectId;
+      scheduledAt: Date;
+      status: 'pending' | 'confirmed' | 'completed' | 'cancelled';
+      meetingUrl?: string;
+      notes?: string;
+      createdAt: Date;
+      updatedAt: Date;
+      sessionId: string;
+      sessionTitle: string;
+      creatorName: string;
+      creatorAvatar?: string;
+    }
+
+    const allBookings: BookingWithSession[] = [];
+    for (const session of sessions) {
+      const userBookings = session.bookings.filter(booking => booking.userId.toString() === userId);
+      for (const booking of userBookings) {
+        allBookings.push({
+          ...booking,
+          sessionId: session.id,
+          sessionTitle: session.title,
+          creatorName: (session.creatorId as any).name,
+          creatorAvatar: (session.creatorId as any).profile_picture
+        });
+      }
+    }
+
+    // Trier par date de création
+    allBookings.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return {
+      bookings: allBookings.map(booking => ({
+        id: booking.id,
+        userId: booking.userId.toString(),
+        userName: 'Current User', // L'utilisateur actuel
+        userAvatar: undefined,
+        scheduledAt: booking.scheduledAt.toISOString(),
+        status: booking.status,
+        meetingUrl: booking.meetingUrl,
+        notes: booking.notes,
+        createdAt: booking.createdAt.toISOString(),
+        updatedAt: booking.updatedAt.toISOString()
+      })),
+      total: allBookings.length
+    };
+  }
+
+  /**
+   * Récupérer les réservations d'un créateur
+   */
+  async getCreatorBookings(creatorId: string): Promise<CreatorBookingsResponseDto> {
+    const sessions = await this.sessionModel
+      .find({ creatorId: new Types.ObjectId(creatorId) })
+      .populate('creatorId', 'name email profile_picture')
+      .exec();
+
+    interface BookingWithSession {
+      id: string;
+      userId: Types.ObjectId;
+      scheduledAt: Date;
+      status: 'pending' | 'confirmed' | 'completed' | 'cancelled';
+      meetingUrl?: string;
+      notes?: string;
+      createdAt: Date;
+      updatedAt: Date;
+      sessionId: string;
+      sessionTitle: string;
+    }
+
+    const allBookings: BookingWithSession[] = [];
+    for (const session of sessions) {
+      for (const booking of session.bookings) {
+        allBookings.push({
+          ...booking,
+          sessionId: session.id,
+          sessionTitle: session.title
+        });
+      }
+    }
+
+    // Trier par date de création
+    allBookings.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    // Récupérer les informations des utilisateurs
+    const userIds = [...new Set(allBookings.map(booking => booking.userId.toString()))];
+    const users = await this.userModel.find({ _id: { $in: userIds } }).select('name email profile_picture');
+
+    return {
+      bookings: allBookings.map(booking => {
+        const user = users.find(u => u._id.equals(booking.userId));
+        return {
+          id: booking.id,
+          userId: booking.userId.toString(),
+          userName: user?.name || 'Utilisateur inconnu',
+          userAvatar: user?.profile_picture,
+          scheduledAt: booking.scheduledAt.toISOString(),
+          status: booking.status,
+          meetingUrl: booking.meetingUrl,
+          notes: booking.notes,
+          createdAt: booking.createdAt.toISOString(),
+          updatedAt: booking.updatedAt.toISOString()
+        };
+      }),
+      total: allBookings.length
+    };
+  }
+
+  /**
+   * Transformer un document Session en DTO de réponse
+   */
+  private async transformToResponseDto(session: SessionDocument, community?: CommunityDocument | null): Promise<SessionResponseDto> {
+    // Récupérer les informations du créateur
+    const creator = await this.userModel.findById(session.creatorId).select('name email profile_picture');
+    
+    // Transformer les réservations
+    const bookingUserIds = session.bookings.map(b => b.userId);
+    const bookingUsers = await this.userModel.find({ _id: { $in: bookingUserIds } }).select('name email profile_picture');
+
+    const bookings = session.bookings.map(booking => {
+      const user = bookingUsers.find(u => u._id.equals(booking.userId));
+      return {
+        id: booking.id,
+        userId: booking.userId.toString(),
+        userName: user?.name || 'Utilisateur inconnu',
+        userAvatar: user?.profile_picture,
+        scheduledAt: booking.scheduledAt.toISOString(),
+        status: booking.status,
+        meetingUrl: booking.meetingUrl,
+        notes: booking.notes,
+        createdAt: booking.createdAt.toISOString(),
+        updatedAt: booking.updatedAt.toISOString()
+      };
+    });
+
+    return {
+      id: session.id,
+      title: session.title,
+      description: session.description,
+      duration: session.duration,
+      price: session.price,
+      currency: session.currency,
+      communityId: session.communityId,
+      communitySlug: community?.slug || '',
+      creatorId: session.creatorId.toString(),
+      creatorName: creator?.name || 'Créateur inconnu',
+      creatorAvatar: creator?.profile_picture,
+      isActive: session.isActive,
+      bookings: bookings,
+      createdAt: session.createdAt.toISOString(),
+      updatedAt: session.updatedAt.toISOString(),
+      category: session.category,
+      maxBookingsPerWeek: session.maxBookingsPerWeek,
+      notes: session.notes,
+      resources: session.resources || [],
+      bookingsCount: session.getBookingsCount(),
+      bookingsThisWeek: session.getBookingsThisWeek(),
+      canBookMore: session.canBookMore()
+    };
+  }
+}

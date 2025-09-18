@@ -1,0 +1,550 @@
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Product, ProductDocument, ProductVariant, ProductFile } from '../schema/product.schema';
+import { Community, CommunityDocument } from '../schema/community.schema';
+import { User, UserDocument } from '../schema/user.schema';
+import { CreateProductDto, CreateProductVariantDto, CreateProductFileDto } from '../dto-product/create-product.dto';
+import { UpdateProductDto } from '../dto-product/update-product.dto';
+import { 
+  ProductResponseDto, 
+  ProductListResponseDto, 
+  ProductStatsResponseDto,
+  ProductVariantResponseDto,
+  ProductFileResponseDto
+} from '../dto-product/product-response.dto';
+
+@Injectable()
+export class ProductService {
+  constructor(
+    @InjectModel(Product.name) private productModel: Model<ProductDocument>,
+    @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+  ) {}
+
+  /**
+   * Créer un nouveau produit
+   */
+  async create(createProductDto: CreateProductDto, userId: string): Promise<ProductResponseDto> {
+    // Vérifier que la communauté existe
+    const community = await this.communityModel.findOne({ id: createProductDto.communityId });
+    if (!community) {
+      throw new NotFoundException('Communauté non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est créateur de la communauté
+    if (community.createur.toString() !== userId) {
+      throw new ForbiddenException('Seuls les créateurs de communauté peuvent créer des produits');
+    }
+
+    // Créer le produit
+    const product = new this.productModel({
+      ...createProductDto,
+      creatorId: new Types.ObjectId(userId),
+      sales: 0,
+      images: createProductDto.images || [],
+      variants: createProductDto.variants || [],
+      files: createProductDto.files || [],
+      features: createProductDto.features || []
+    });
+
+    const savedProduct = await product.save();
+    
+    // Récupérer les informations complètes
+    const populatedProduct = await this.productModel
+      .findById(savedProduct._id)
+      .populate('creatorId', 'name email profile_picture')
+      .exec();
+
+    return await this.transformToResponseDto(populatedProduct!, community);
+  }
+
+  /**
+   * Récupérer tous les produits avec pagination et filtres
+   */
+  async findAll(
+    page: number = 1,
+    limit: number = 10,
+    communityId?: string,
+    creatorId?: string,
+    category?: string,
+    type?: string,
+    minPrice?: number,
+    maxPrice?: number,
+    search?: string
+  ): Promise<ProductListResponseDto> {
+    const query: any = { isPublished: true };
+
+    // Filtres
+    if (communityId) {
+      query.communityId = communityId;
+    }
+    if (creatorId) {
+      query.creatorId = new Types.ObjectId(creatorId);
+    }
+    if (category) {
+      query.category = { $regex: category, $options: 'i' };
+    }
+    if (type) {
+      query.type = type;
+    }
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      query.price = {};
+      if (minPrice !== undefined) query.price.$gte = minPrice;
+      if (maxPrice !== undefined) query.price.$lte = maxPrice;
+    }
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { category: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const [products, total] = await Promise.all([
+      this.productModel
+        .find(query)
+        .populate('creatorId', 'name email profile_picture')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+      this.productModel.countDocuments(query)
+    ]);
+
+    // Récupérer les informations des communautés
+    const communityIds = [...new Set(products.map(product => product.communityId))];
+    const communities = await this.communityModel.find({ id: { $in: communityIds } });
+
+    const productsWithCommunities = await Promise.all(
+      products.map(async product => {
+        const community = communities.find(c => c.id === product.communityId);
+        return await this.transformToResponseDto(product, community);
+      })
+    );
+
+    return {
+      products: productsWithCommunities,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
+
+  /**
+   * Récupérer un produit par son ID
+   */
+  async findOne(id: string): Promise<ProductResponseDto> {
+    const product = await this.productModel
+      .findOne({ id })
+      .populate('creatorId', 'name email profile_picture')
+      .exec();
+
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    const community = await this.communityModel.findOne({ id: product.communityId });
+    return await this.transformToResponseDto(product, community || undefined);
+  }
+
+  /**
+   * Mettre à jour un produit
+   */
+  async update(id: string, updateProductDto: UpdateProductDto, userId: string): Promise<ProductResponseDto> {
+    const product = await this.productModel.findOne({ id });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    // Mettre à jour le produit
+    Object.assign(product, updateProductDto);
+    product.updatedAt = new Date();
+    
+    const updatedProduct = await product.save();
+    
+    // Récupérer les informations complètes
+    const populatedProduct = await this.productModel
+      .findById(updatedProduct._id)
+      .populate('creatorId', 'name email profile_picture')
+      .exec();
+
+    const community = await this.communityModel.findOne({ id: product.communityId });
+    return await this.transformToResponseDto(populatedProduct!, community || undefined);
+  }
+
+  /**
+   * Supprimer un produit
+   */
+  async remove(id: string, userId: string): Promise<{ message: string }> {
+    const product = await this.productModel.findOne({ id });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez supprimer que vos propres produits');
+    }
+
+    await this.productModel.deleteOne({ _id: product._id });
+    return { message: 'Produit supprimé avec succès' };
+  }
+
+  /**
+   * Ajouter une variante à un produit
+   */
+  async addVariant(productId: string, createVariantDto: CreateProductVariantDto, userId: string): Promise<ProductVariantResponseDto> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    const variant: ProductVariant = {
+      id: new Types.ObjectId().toString(),
+      ...createVariantDto
+    };
+
+    product.addVariant(variant);
+    await product.save();
+
+    return {
+      id: variant.id,
+      name: variant.name,
+      price: variant.price,
+      description: variant.description,
+      inventory: variant.inventory
+    };
+  }
+
+  /**
+   * Supprimer une variante d'un produit
+   */
+  async removeVariant(productId: string, variantId: string, userId: string): Promise<{ message: string }> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    const variant = product.variants?.find(v => v.id === variantId);
+    if (!variant) {
+      throw new NotFoundException('Variante non trouvée');
+    }
+
+    product.removeVariant(variantId);
+    await product.save();
+
+    return { message: 'Variante supprimée avec succès' };
+  }
+
+  /**
+   * Ajouter un fichier à un produit
+   */
+  async addFile(productId: string, createFileDto: CreateProductFileDto, userId: string): Promise<ProductFileResponseDto> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    const file: ProductFile = {
+      id: new Types.ObjectId().toString(),
+      order: createFileDto.order || 0,
+      downloadCount: 0,
+      isActive: createFileDto.isActive !== undefined ? createFileDto.isActive : true,
+      uploadedAt: new Date(),
+      ...createFileDto
+    };
+
+    product.addFile(file);
+    await product.save();
+
+    return {
+      id: file.id,
+      name: file.name,
+      url: file.url,
+      type: file.type,
+      size: file.size,
+      description: file.description,
+      order: file.order,
+      downloadCount: file.downloadCount,
+      isActive: file.isActive,
+      uploadedAt: file.uploadedAt.toISOString()
+    };
+  }
+
+  /**
+   * Supprimer un fichier d'un produit
+   */
+  async removeFile(productId: string, fileId: string, userId: string): Promise<{ message: string }> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    const file = product.files?.find(f => f.id === fileId);
+    if (!file) {
+      throw new NotFoundException('Fichier non trouvé');
+    }
+
+    product.removeFile(fileId);
+    await product.save();
+
+    return { message: 'Fichier supprimé avec succès' };
+  }
+
+  /**
+   * Mettre à jour l'inventaire d'un produit
+   */
+  async updateInventory(productId: string, amount: number, userId: string): Promise<{ message: string; newInventory: number }> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    if (product.type !== 'physical') {
+      throw new BadRequestException('Seuls les produits physiques peuvent avoir un inventaire');
+    }
+
+    const success = product.updateInventory(amount);
+    if (!success) {
+      throw new BadRequestException('Inventaire insuffisant');
+    }
+
+    await product.save();
+
+    return { 
+      message: 'Inventaire mis à jour avec succès', 
+      newInventory: product.inventory || 0 
+    };
+  }
+
+  /**
+   * Incrémenter les ventes d'un produit
+   */
+  async incrementSales(productId: string, amount: number = 1): Promise<void> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    product.incrementSales(amount);
+    await product.save();
+  }
+
+  /**
+   * Basculer le statut de publication d'un produit
+   */
+  async togglePublished(productId: string, userId: string): Promise<{ message: string; isPublished: boolean }> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    product.isPublished = !product.isPublished;
+    await product.save();
+
+    return { 
+      message: `Produit ${product.isPublished ? 'publié' : 'dépublié'} avec succès`, 
+      isPublished: product.isPublished 
+    };
+  }
+
+  /**
+   * Récupérer les statistiques d'un produit
+   */
+  async getProductStats(productId: string): Promise<ProductStatsResponseDto> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    return {
+      productId: product.id,
+      totalSales: product.sales,
+      remainingInventory: product.inventory || 0,
+      averageRating: product.rating || 0,
+      totalVariants: product.getTotalVariants(),
+      totalFiles: product.getTotalFiles()
+    };
+  }
+
+  /**
+   * Récupérer les produits d'un créateur
+   */
+  async findByCreator(creatorId: string, page: number = 1, limit: number = 10): Promise<ProductListResponseDto> {
+    return this.findAll(page, limit, undefined, creatorId);
+  }
+
+  /**
+   * Récupérer les produits d'une communauté
+   */
+  async findByCommunity(communityId: string, page: number = 1, limit: number = 10): Promise<ProductListResponseDto> {
+    return this.findAll(page, limit, communityId);
+  }
+
+  /**
+   * Télécharger un fichier de produit (incrémente le compteur)
+   */
+  async downloadFile(productId: string, fileId: string, userId: string): Promise<{ downloadUrl: string; message: string }> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    const file = product.files?.find(f => f.id === fileId);
+    if (!file) {
+      throw new NotFoundException('Fichier non trouvé');
+    }
+
+    if (!file.isActive) {
+      throw new BadRequestException('Ce fichier n\'est plus disponible');
+    }
+
+    // Incrémenter le compteur de téléchargements
+    file.downloadCount += 1;
+    await product.save();
+
+    return {
+      downloadUrl: file.url,
+      message: 'Fichier prêt pour téléchargement'
+    };
+  }
+
+  /**
+   * Mettre à jour le statut d'un fichier
+   */
+  async updateFileStatus(productId: string, fileId: string, isActive: boolean, userId: string): Promise<{ message: string }> {
+    const product = await this.productModel.findOne({ id: productId });
+    if (!product) {
+      throw new NotFoundException('Produit non trouvé');
+    }
+
+    // Vérifier que l'utilisateur est le créateur du produit
+    if (product.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez modifier que vos propres produits');
+    }
+
+    const file = product.files?.find(f => f.id === fileId);
+    if (!file) {
+      throw new NotFoundException('Fichier non trouvé');
+    }
+
+    file.isActive = isActive;
+    await product.save();
+
+    return { 
+      message: `Fichier ${isActive ? 'activé' : 'désactivé'} avec succès` 
+    };
+  }
+
+  /**
+   * Transformer un document Product en DTO de réponse
+   */
+  private async transformToResponseDto(product: ProductDocument, community?: CommunityDocument | null): Promise<ProductResponseDto> {
+    // Transformer les variantes
+    const variants = product.variants?.map(variant => ({
+      id: variant.id,
+      name: variant.name,
+      price: variant.price,
+      description: variant.description,
+      inventory: variant.inventory
+    })) || [];
+
+    // Transformer les fichiers
+    const files = product.files?.map(file => ({
+      id: file.id,
+      name: file.name,
+      url: file.url,
+      type: file.type,
+      size: file.size,
+      description: file.description,
+      order: file.order,
+      downloadCount: file.downloadCount,
+      isActive: file.isActive,
+      uploadedAt: file.uploadedAt.toISOString()
+    })) || [];
+
+    // Récupérer les informations du créateur
+    const creator = await this.userModel.findById(product.creatorId).select('name email profile_picture');
+
+    return {
+      id: product.id,
+      title: product.title,
+      description: product.description,
+      price: product.price,
+      currency: product.currency,
+      communityId: product.communityId,
+      community: community ? {
+        id: community.id,
+        name: community.name,
+        slug: community.slug
+      } : {
+        id: product.communityId,
+        name: 'Communauté inconnue',
+        slug: 'unknown'
+      },
+      creatorId: product.creatorId.toString(),
+      creator: {
+        id: product.creatorId.toString(),
+        name: creator?.name || 'Créateur inconnu',
+        email: creator?.email || '',
+        avatar: creator?.profile_picture
+      },
+      isPublished: product.isPublished,
+      inventory: product.inventory,
+      sales: product.sales,
+      category: product.category,
+      type: product.type,
+      images: product.images,
+      variants: variants,
+      files: files,
+      rating: product.rating,
+      licenseTerms: product.licenseTerms,
+      isRecurring: product.isRecurring,
+      recurringInterval: product.recurringInterval,
+      features: product.features,
+      createdAt: product.createdAt.toISOString(),
+      updatedAt: product.updatedAt.toISOString()
+    };
+  }
+}
