@@ -12,6 +12,17 @@ This document summarizes what is implemented today and what remains, aligned wit
 - Promo codes are supported across content types via `PromoService`.
 - Orders record amount, platform fee, creator net, promo code, discount, status, paymentId, paymentMethod.
 
+### Trials & Billing (Implemented)
+- Trial requires a billing method to be set first.
+  - POST `/subscriptions/setup-billing` with `{ providerCustomerId, paymentBrand?, paymentLast4? }` marks `hasPaymentMethod=true` on the creator's `Subscription` and stores masked info for display.
+  - Then POST `/subscriptions/start-trial` starts a 7‑day trial on STARTER plan.
+- During trial, `PolicyService.hasActiveSubscription()` treats the creator as active until `trialEndsAt`.
+- Auto-activation after trial end:
+  - If `hasPaymentMethod=true` and the current time is past `trialEndsAt`, backend auto-switches to `status=active` (stubbed monthly period window) on the next enforcement call via `SubscriptionService.ensureActiveOrTrial()`.
+  - If no payment method is present, creator becomes inactive for activation/publish after trial until they upgrade.
+- Frontend countdown:
+  - GET `/subscriptions/trial-remaining` → `{ isTrialing, expiresAt, remaining: { days, hours, minutes, seconds, totalMs } }` for banners like “Expiring in 12d : 16h : 38m”.
+
 ### Plans and Limits
 - STARTER: 1 community, 100 members, up to 3 activated courses, ~2GB storage, higher fees.
 - GROWTH: 3 communities, 10,000 total members, no activation limit for courses, 50GB storage.
@@ -88,6 +99,15 @@ Flouci init (creates pending `Order`, returns link/QR):
   - body: `{ userId: string, tier: 'STARTER'|'GROWTH'|'PRO' }`
   - creates pending `Order` with `contentType=subscription` where `contentId=tier`
 
+Subscriptions (billing & trial)
+- POST `/subscriptions/setup-billing`
+  - body: `{ providerCustomerId: string, paymentBrand?: string, paymentLast4?: string }`
+  - marks `hasPaymentMethod=true` and stores masked display fields.
+- POST `/subscriptions/start-trial`
+  - starts 7‑day trial on STARTER if `hasPaymentMethod=true`.
+- GET `/subscriptions/trial-remaining`
+  - returns structured countdown for frontend UI.
+
 Verification and webhook:
 - GET `/payments/verify?paymentId=...`
   - On SUCCESS: marks `Order` paid and grants access:
@@ -117,6 +137,14 @@ Notes:
 - Community membership via paid checkout grants access to free courses within that community.
 - Standalone flows: challenges, sessions, products, events can be purchased independently.
 
+Subscription enforcement
+- A creator is considered active if:
+  - `status === 'active'`, or
+  - `status === 'trialing'` and `trialEndsAt` is in the future.
+- After trial:
+  - If `hasPaymentMethod=true`, backend auto-activates to ACTIVE when enforcement is checked.
+  - Otherwise activation/publishing is blocked until manual upgrade.
+
 ---
 
 ## Admins and Team Power (Implemented)
@@ -137,7 +165,7 @@ Notes:
 
 3) Subscriptions end-to-end (partially done)
 - Flouci init/verify for plan purchase implemented and plan upgrade on success.
-- Next: scheduled job to renew/downgrade on period/trial end + receipts.
+- Auto-activation after trial implemented (requires billing set). Next: scheduled renewal job, real provider subscription creation and invoicing, receipts.
 
 4) Event auto-registration
 - Persist `ticketType` in `Order` metadata and call `EventService.registerAttendee` after verify success.

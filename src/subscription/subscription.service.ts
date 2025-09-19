@@ -17,6 +17,13 @@ export class SubscriptionService {
       throw new BadRequestException('Une souscription active existe déjà');
     }
 
+    // Require billing method before starting trial
+    const needsBilling = existing && existing.hasPaymentMethod === true ? false : true;
+    const hasBilling = existing?.hasPaymentMethod === true;
+    if (!hasBilling) {
+      throw new BadRequestException("Un moyen de paiement doit être configuré avant de démarrer l'essai gratuit");
+    }
+
     const plan = await this.planModel.findOne({ tier: PlanTier.STARTER, isActive: true });
     if (!plan) {
       throw new BadRequestException('Plan STARTER introuvable');
@@ -49,6 +56,47 @@ export class SubscriptionService {
       message: 'Essai gratuit démarré',
       subscription: sub,
     };
+  }
+
+  async setupBillingMethod(creatorId: string | Types.ObjectId, body: { providerCustomerId: string; paymentBrand?: string; paymentLast4?: string }) {
+    if (!body?.providerCustomerId) {
+      throw new BadRequestException('providerCustomerId requis');
+    }
+    const sub = await this.subModel.findOneAndUpdate(
+      { creatorId: new Types.ObjectId(creatorId as any) },
+      {
+        $set: {
+          provider: body.paymentBrand ? 'custom' : 'custom',
+          providerCustomerId: body.providerCustomerId,
+          hasPaymentMethod: true,
+          paymentBrand: body.paymentBrand,
+          paymentLast4: body.paymentLast4,
+        },
+      },
+      { upsert: true, new: true },
+    );
+
+    return { message: 'Moyen de paiement enregistré', subscription: sub };
+  }
+
+  // Called by cron or before guarded actions to auto-activate expired trials
+  async ensureActiveOrTrial(creatorId: string | Types.ObjectId) {
+    const sub = await this.subModel.findOne({ creatorId: new Types.ObjectId(creatorId as any) });
+    if (!sub) return null;
+    const now = new Date();
+    if (sub.status === SubscriptionStatus.TRIALING && sub.trialEndsAt && sub.trialEndsAt.getTime() <= now.getTime()) {
+      if (sub.hasPaymentMethod) {
+        // Auto-activate to STARTER (stub billing capture; in real flow, create provider sub)
+        sub.status = SubscriptionStatus.ACTIVE;
+        sub.currentPeriodStart = now;
+        sub.currentPeriodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        await sub.save();
+      } else {
+        // Trial ended without billing: remain not active; policy will block activation
+        return sub;
+      }
+    }
+    return sub;
   }
 
   async upgradePlan(creatorId: string | Types.ObjectId, tier: PlanTier) {
@@ -96,6 +144,45 @@ export class SubscriptionService {
   async getMySubscription(creatorId: string | Types.ObjectId) {
     const sub = await this.subModel.findOne({ creatorId: new Types.ObjectId(creatorId as any) });
     return sub || null;
+  }
+
+  async getTrialRemaining(creatorId: string | Types.ObjectId) {
+    const sub = await this.subModel.findOne({ creatorId: new Types.ObjectId(creatorId as any) });
+    if (!sub) {
+      return {
+        isTrialing: false,
+        expiresAt: null,
+        remaining: { days: 0, hours: 0, minutes: 0, seconds: 0, totalMs: 0 },
+        message: 'No subscription found',
+      };
+    }
+
+    const now = new Date();
+    const expiresAt = sub.trialEndsAt || null;
+    const isTrialing = sub.status === SubscriptionStatus.TRIALING && !!expiresAt && expiresAt.getTime() > now.getTime();
+
+    if (!isTrialing) {
+      return {
+        isTrialing: false,
+        expiresAt,
+        remaining: { days: 0, hours: 0, minutes: 0, seconds: 0, totalMs: 0 },
+        message: 'Not in trial',
+      };
+    }
+
+    const diffMs = expiresAt!.getTime() - now.getTime();
+    const totalSeconds = Math.max(0, Math.floor(diffMs / 1000));
+    const days = Math.floor(totalSeconds / (24 * 3600));
+    const hours = Math.floor((totalSeconds % (24 * 3600)) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    return {
+      isTrialing: true,
+      expiresAt,
+      remaining: { days, hours, minutes, seconds, totalMs: diffMs },
+      message: 'Trial active',
+    };
   }
 }
 

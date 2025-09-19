@@ -18,6 +18,16 @@ export class SubscriptionController {
     return this.subscriptionService.startTrialForCreator(creatorId);
   }
 
+  @Post('setup-billing')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Setup billing method for current creator (store provider customer + masked info)' })
+  @ApiBody({ schema: { type: 'object', properties: { providerCustomerId: { type: 'string' }, paymentBrand: { type: 'string' }, paymentLast4: { type: 'string' } }, required: ['providerCustomerId'] } })
+  async setupBilling(@Request() req: any, @Body() body: any) {
+    const creatorId = req.user._id || req.user.sub;
+    return this.subscriptionService.setupBillingMethod(creatorId, body);
+  }
+
   @Post('upgrade')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
@@ -44,6 +54,15 @@ export class SubscriptionController {
   async me(@Request() req: any) {
     const creatorId = req.user._id || req.user.sub;
     return this.subscriptionService.getMySubscription(creatorId);
+  }
+
+  @Get('trial-remaining')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get remaining time for current creator\'s trial (days/hours/minutes/seconds)' })
+  async trialRemaining(@Request() req: any) {
+    const creatorId = req.user._id || req.user.sub;
+    return this.subscriptionService.getTrialRemaining(creatorId);
   }
 }
 

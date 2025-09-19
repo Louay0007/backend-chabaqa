@@ -21,7 +21,9 @@ export class AdminGuard implements CanActivate {
     }
 
     // Vérifier si l'utilisateur est un admin
-    if (!user.isAdmin) {
+    const role = user.role || user.type || user.userRole;
+    const isAdmin = user.isAdmin || role === 'admin' || role === 'superadmin' || role === 'owner';
+    if (!isAdmin) {
       throw new ForbiddenException('Seuls les administrateurs peuvent créer des ressources');
     }
 

@@ -44,6 +44,7 @@ import { EventSchema } from './schema/event.schema';
 import { ProductSchema } from './schema/product.schema';
 import { SessionSchema } from './schema/session.schema';
 import { FlouciModule } from './common/modules/flouci.module';
+import { DmModule } from './dm/dm.module';
 
 @Module({
   imports: [
@@ -117,6 +118,7 @@ import { FlouciModule } from './common/modules/flouci.module';
     FeeModule,
     PromoModule,
     FlouciModule,
+    DmModule,
   ],
   controllers: [AppController, UserController, TrackingController, PaymentController],
   providers: [AppService, UserService, EmailService],

@@ -66,6 +66,17 @@ export class Subscription {
 
   @Prop({ type: Number, default: 0 })
   adminsMax: number;
+
+  // Billing method presence (card/mandate set up with provider)
+  @Prop({ type: Boolean, default: false })
+  hasPaymentMethod: boolean;
+
+  // Optional masked info for display
+  @Prop()
+  paymentBrand?: string; // e.g., VISA
+
+  @Prop()
+  paymentLast4?: string;
 }
 
 export const SubscriptionSchema = SchemaFactory.createForClass(Subscription);

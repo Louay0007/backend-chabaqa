@@ -39,8 +39,12 @@ export class PolicyService {
   }
 
   async hasActiveSubscription(creatorId: Types.ObjectId | string): Promise<boolean> {
-    const sub = await this.subModel.findOne({ creatorId: new Types.ObjectId(creatorId as any), status: { $in: ['active', 'trial'] } }).lean();
-    return !!sub;
+    const now = new Date();
+    const sub = await this.subModel.findOne({ creatorId: new Types.ObjectId(creatorId as any) }).lean();
+    if (!sub) return false;
+    if (sub.status === 'active') return true;
+    if (sub.status === 'trialing' && sub.trialEndsAt && new Date(sub.trialEndsAt).getTime() > now.getTime()) return true;
+    return false;
   }
 
   async canActivateMoreCourses(creatorId: Types.ObjectId | string, currentActiveCount: number): Promise<boolean> {
