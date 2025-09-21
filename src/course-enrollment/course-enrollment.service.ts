@@ -75,6 +75,31 @@ export class CourseEnrollmentService {
       await course.save();
     }
 
+    // Vérifier l'accès séquentiel si activé
+    if (course.sequentialProgression) {
+      console.log(`🔒 [CourseEnrollmentService] Vérification de l'accès séquentiel pour le chapitre ${chapterId}`);
+      
+      const accessCheck = course.verifierAccesChapitre(chapterId, enrollment.progression);
+      
+      if (!accessCheck.hasAccess) {
+        console.log(`❌ [CourseEnrollmentService] Accès refusé - ${accessCheck.reason}`);
+        
+        let errorMessage = 'Vous ne pouvez pas accéder à ce chapitre.';
+        
+        if (accessCheck.requiredChapter) {
+          errorMessage = `Vous devez compléter le chapitre "${accessCheck.requiredChapter.titre}" avant d'accéder à ce chapitre.`;
+        }
+        
+        if (course.unlockMessage) {
+          errorMessage = course.unlockMessage;
+        }
+        
+        throw new BadRequestException(errorMessage);
+      }
+      
+      console.log(`✅ [CourseEnrollmentService] Accès séquentiel autorisé`);
+    }
+
     // Vérifier si une progression existe déjà pour ce chapitre
     let progress = enrollment.progression.find(p => p.chapterId === chapterId);
 
@@ -177,6 +202,37 @@ export class CourseEnrollmentService {
 
     if (!enrollment) {
       throw new NotFoundException('Inscription au cours non trouvée');
+    }
+
+    // Vérifier que le cours existe pour accéder aux propriétés de progression séquentielle
+    const course = await this.coursModel.findById(courseId);
+    if (!course) {
+      throw new NotFoundException('Cours non trouvé');
+    }
+
+    // Vérifier l'accès séquentiel si activé
+    if (course.sequentialProgression) {
+      console.log(`🔒 [CourseEnrollmentService] Vérification de l'accès séquentiel pour compléter le chapitre ${chapterId}`);
+      
+      const accessCheck = course.verifierAccesChapitre(chapterId, enrollment.progression);
+      
+      if (!accessCheck.hasAccess) {
+        console.log(`❌ [CourseEnrollmentService] Accès refusé pour compléter - ${accessCheck.reason}`);
+        
+        let errorMessage = 'Vous ne pouvez pas compléter ce chapitre.';
+        
+        if (accessCheck.requiredChapter) {
+          errorMessage = `Vous devez compléter le chapitre "${accessCheck.requiredChapter.titre}" avant de pouvoir compléter ce chapitre.`;
+        }
+        
+        if (course.unlockMessage) {
+          errorMessage = course.unlockMessage;
+        }
+        
+        throw new BadRequestException(errorMessage);
+      }
+      
+      console.log(`✅ [CourseEnrollmentService] Accès séquentiel autorisé pour compléter`);
     }
 
     const progress = enrollment.progression.find(p => p.chapterId === chapterId);

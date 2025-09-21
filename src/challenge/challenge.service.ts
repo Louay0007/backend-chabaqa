@@ -1001,4 +1001,386 @@ export class ChallengeService {
   async getChallengeStats(challengeId: string) {
     return await this.trackingService.getContentStats(challengeId, TrackableContentType.CHALLENGE);
   }
+
+  // ============ SEQUENTIAL PROGRESSION METHODS ============
+
+  /**
+   * Activer ou désactiver la progression séquentielle d'un défi
+   * @param challengeId ID du défi
+   * @param enabled Activer ou désactiver
+   * @param unlockMessage Message personnalisé pour les tâches verrouillées
+   * @param userId ID de l'utilisateur (pour vérifier les permissions)
+   * @returns Défi mis à jour
+   */
+  async updateSequentialProgression(
+    challengeId: string, 
+    enabled: boolean, 
+    unlockMessage: string | undefined, 
+    userId: string
+  ): Promise<ChallengeResponseDto> {
+    console.log('🔧 DEBUG - updateSequentialProgression (Challenge)');
+    console.log(`   📋 Challenge ID: ${challengeId}`);
+    console.log(`   🔒 Enabled: ${enabled}`);
+    console.log(`   💬 Unlock Message: ${unlockMessage}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Vérifier que le défi existe
+      const challenge = await this.challengeModel.findOne({ id: challengeId });
+      if (!challenge) {
+        throw new NotFoundException('Défi non trouvé');
+      }
+
+      // 2. Vérifier que l'utilisateur est le créateur du défi
+      if (challenge.creatorId.toString() !== userId) {
+        throw new ForbiddenException('Seul le créateur du défi peut modifier la progression séquentielle');
+      }
+
+      // 3. Mettre à jour la progression séquentielle
+      if (enabled) {
+        challenge.activerProgressionSequentielle(unlockMessage);
+      } else {
+        challenge.desactiverProgressionSequentielle();
+      }
+
+      const challengeEnregistre = await challenge.save();
+
+      console.log('   ✅ Progression séquentielle mise à jour avec succès');
+      console.log(`   🔒 Sequential Progression: ${challengeEnregistre.sequentialProgression}`);
+
+      const community = await this.communityModel.findOne({ id: challenge.communityId });
+      return this.transformToResponseDto(challengeEnregistre, community || undefined);
+
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la mise à jour de la progression séquentielle:', error);
+      throw new BadRequestException('Erreur lors de la mise à jour de la progression séquentielle');
+    }
+  }
+
+  /**
+   * Vérifier l'accès à une tâche avec la progression séquentielle
+   * @param challengeId ID du défi
+   * @param taskId ID de la tâche
+   * @param userId ID de l'utilisateur
+   * @returns Informations sur l'accès à la tâche
+   */
+  async checkTaskAccessWithSequential(
+    challengeId: string, 
+    taskId: string, 
+    userId: string
+  ): Promise<{
+    hasAccess: boolean;
+    reason: string;
+    requiredTask?: {
+      id: string;
+      title: string;
+      day: number;
+    };
+    unlockMessage?: string;
+    nextTask?: {
+      id: string;
+      title: string;
+      day: number;
+    };
+  }> {
+    console.log('🔧 DEBUG - checkTaskAccessWithSequential');
+    console.log(`   📋 Challenge ID: ${challengeId}`);
+    console.log(`   📄 Task ID: ${taskId}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Récupérer le défi
+      const challenge = await this.challengeModel.findOne({ id: challengeId });
+      if (!challenge) {
+        throw new NotFoundException('Défi non trouvé');
+      }
+
+      // 2. Vérifier que l'utilisateur est participant
+      if (!challenge.isParticipant(new Types.ObjectId(userId))) {
+        throw new NotFoundException('Utilisateur non participant à ce défi');
+      }
+
+      // 3. Récupérer les tâches complétées par l'utilisateur
+      const participant = challenge.participants.find(p => p.userId.toString() === userId);
+      if (!participant) {
+        throw new NotFoundException('Participant non trouvé');
+      }
+
+      // 4. Utiliser la méthode du schéma pour vérifier l'accès
+      const accessCheck = challenge.verifierAccesTache(taskId, participant.completedTasks);
+
+      // 5. Obtenir la tâche suivante si disponible
+      const nextTask = challenge.obtenirTacheSuivante(taskId);
+
+      console.log('   ✅ Vérification d\'accès terminée');
+      console.log(`   🔓 Has Access: ${accessCheck.hasAccess}`);
+      console.log(`   📝 Reason: ${accessCheck.reason}`);
+
+      return {
+        hasAccess: accessCheck.hasAccess,
+        reason: accessCheck.reason,
+        requiredTask: accessCheck.requiredTask ? {
+          id: accessCheck.requiredTask.id,
+          title: accessCheck.requiredTask.title,
+          day: accessCheck.requiredTask.day
+        } : undefined,
+        unlockMessage: challenge.unlockMessage,
+        nextTask: nextTask ? {
+          id: nextTask.id,
+          title: nextTask.title,
+          day: nextTask.day
+        } : undefined
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la vérification d\'accès à la tâche:', error);
+      throw new BadRequestException('Erreur lors de la vérification d\'accès à la tâche');
+    }
+  }
+
+  /**
+   * Obtenir les tâches déverrouillées pour un utilisateur
+   * @param challengeId ID du défi
+   * @param userId ID de l'utilisateur
+   * @returns Liste des tâches déverrouillées
+   */
+  async getUnlockedTasks(challengeId: string, userId: string): Promise<{
+    unlockedTasks: Array<{
+      id: string;
+      title: string;
+      day: number;
+      isCompleted: boolean;
+      isUnlocked: boolean;
+    }>;
+    sequentialProgressionEnabled: boolean;
+    unlockMessage?: string;
+  }> {
+    console.log('🔧 DEBUG - getUnlockedTasks');
+    console.log(`   📋 Challenge ID: ${challengeId}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Récupérer le défi
+      const challenge = await this.challengeModel.findOne({ id: challengeId });
+      if (!challenge) {
+        throw new NotFoundException('Défi non trouvé');
+      }
+
+      // 2. Vérifier que l'utilisateur est participant
+      if (!challenge.isParticipant(new Types.ObjectId(userId))) {
+        throw new NotFoundException('Utilisateur non participant à ce défi');
+      }
+
+      // 3. Récupérer les tâches complétées par l'utilisateur
+      const participant = challenge.participants.find(p => p.userId.toString() === userId);
+      if (!participant) {
+        throw new NotFoundException('Participant non trouvé');
+      }
+
+      // 4. Construire la liste des tâches avec leur statut
+      const unlockedTasks: Array<{
+        id: string;
+        title: string;
+        day: number;
+        isCompleted: boolean;
+        isUnlocked: boolean;
+      }> = [];
+
+      // Trier les tâches par jour
+      const tasksTriees = [...(challenge.tasks || [])].sort((a, b) => a.day - b.day);
+
+      for (const task of tasksTriees) {
+        // Vérifier si la tâche est complétée
+        const isCompleted = participant.completedTasks.includes(task.id);
+
+        // Vérifier si la tâche est déverrouillée
+        let isUnlocked = true;
+        if (challenge.sequentialProgression) {
+          const accessCheck = challenge.verifierAccesTache(task.id, participant.completedTasks);
+          isUnlocked = accessCheck.hasAccess;
+        }
+
+        unlockedTasks.push({
+          id: task.id,
+          title: task.title,
+          day: task.day,
+          isCompleted,
+          isUnlocked
+        });
+      }
+
+      console.log(`   ✅ ${unlockedTasks.length} tâches analysées`);
+      console.log(`   🔓 ${unlockedTasks.filter(t => t.isUnlocked).length} tâches déverrouillées`);
+
+      return {
+        unlockedTasks,
+        sequentialProgressionEnabled: challenge.sequentialProgression,
+        unlockMessage: challenge.unlockMessage
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la récupération des tâches déverrouillées:', error);
+      throw new BadRequestException('Erreur lors de la récupération des tâches déverrouillées');
+    }
+  }
+
+  /**
+   * Déverrouiller manuellement une tâche (pour les créateurs/admins)
+   * @param challengeId ID du défi
+   * @param taskId ID de la tâche à déverrouiller
+   * @param userId ID de l'utilisateur cible
+   * @param creatorId ID du créateur/admin qui effectue l'action
+   * @returns Message de confirmation
+   */
+  async unlockTaskManually(
+    challengeId: string, 
+    taskId: string, 
+    userId: string, 
+    creatorId: string
+  ): Promise<{ message: string }> {
+    console.log('🔧 DEBUG - unlockTaskManually');
+    console.log(`   📋 Challenge ID: ${challengeId}`);
+    console.log(`   📄 Task ID: ${taskId}`);
+    console.log(`   👤 Target User ID: ${userId}`);
+    console.log(`   👨‍💼 Creator ID: ${creatorId}`);
+
+    try {
+      // 1. Vérifier que le défi existe
+      const challenge = await this.challengeModel.findOne({ id: challengeId });
+      if (!challenge) {
+        throw new NotFoundException('Défi non trouvé');
+      }
+
+      // 2. Vérifier que le créateur est le créateur du défi
+      if (challenge.creatorId.toString() !== creatorId) {
+        throw new ForbiddenException('Seul le créateur du défi peut déverrouiller des tâches');
+      }
+
+      // 3. Vérifier que l'utilisateur est participant
+      if (!challenge.isParticipant(new Types.ObjectId(userId))) {
+        throw new NotFoundException('Utilisateur non participant à ce défi');
+      }
+
+      // 4. Trouver le participant
+      const participant = challenge.participants.find(p => p.userId.toString() === userId);
+      if (!participant) {
+        throw new NotFoundException('Participant non trouvé');
+      }
+
+      // 5. Marquer la tâche comme accessible (mais pas forcément complétée)
+      // On ne l'ajoute pas aux completedTasks, on la laisse accessible
+      participant.lastActivityAt = new Date();
+      await challenge.save();
+
+      console.log('   ✅ Tâche déverrouillée manuellement avec succès');
+
+      return {
+        message: 'Tâche déverrouillée avec succès'
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors du déverrouillage manuel de la tâche:', error);
+      throw new BadRequestException('Erreur lors du déverrouillage manuel de la tâche');
+    }
+  }
+
+  /**
+   * Mettre à jour le progrès d'un participant avec vérification séquentielle
+   * @param updateProgressDto Données de mise à jour du progrès
+   * @param userId ID de l'utilisateur
+   * @returns Défi mis à jour
+   */
+  async updateProgressWithSequential(updateProgressDto: UpdateProgressDto, userId: string): Promise<ChallengeResponseDto> {
+    console.log('🔧 DEBUG - updateProgressWithSequential');
+    console.log(`   📋 Challenge ID: ${updateProgressDto.challengeId}`);
+    console.log(`   📄 Task ID: ${updateProgressDto.taskId}`);
+    console.log(`   📊 Status: ${updateProgressDto.status}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Récupérer le défi
+      const challenge = await this.challengeModel.findOne({ id: updateProgressDto.challengeId });
+      if (!challenge) {
+        throw new NotFoundException('Défi non trouvé');
+      }
+
+      // 2. Vérifier que l'utilisateur est participant
+      if (!challenge.isParticipant(new Types.ObjectId(userId))) {
+        throw new BadRequestException('Vous n\'êtes pas participant à ce défi');
+      }
+
+      // 3. Trouver la tâche
+      const task = challenge.tasks?.find(t => t.id === updateProgressDto.taskId);
+      if (!task) {
+        throw new NotFoundException('Tâche non trouvée');
+      }
+
+      // 4. Si la progression séquentielle est activée, vérifier l'accès
+      if (challenge.sequentialProgression) {
+        const participant = challenge.participants.find(p => p.userId.toString() === userId);
+        if (participant) {
+          const accessCheck = challenge.verifierAccesTache(updateProgressDto.taskId, participant.completedTasks);
+          if (!accessCheck.hasAccess) {
+            throw new ForbiddenException(`Vous devez compléter la tâche précédente pour accéder à cette tâche: ${accessCheck.requiredTask?.title}`);
+          }
+        }
+      }
+
+      // 5. Mettre à jour le statut de la tâche
+      if (updateProgressDto.status === 'completed') {
+        task.isCompleted = true;
+      } else if (updateProgressDto.status === 'in_progress') {
+        task.isCompleted = false;
+      } else {
+        task.isCompleted = false;
+      }
+
+      // 6. Mettre à jour le progrès du participant
+      const participant = challenge.participants.find(p => p.userId.toString() === userId);
+      if (participant) {
+        if (updateProgressDto.status === 'completed' && !participant.completedTasks.includes(updateProgressDto.taskId)) {
+          participant.completedTasks.push(updateProgressDto.taskId);
+          participant.totalPoints += task.points;
+        } else if (updateProgressDto.status !== 'completed' && participant.completedTasks.includes(updateProgressDto.taskId)) {
+          participant.completedTasks = participant.completedTasks.filter(id => id !== updateProgressDto.taskId);
+          participant.totalPoints = Math.max(0, participant.totalPoints - task.points);
+        }
+
+        // Calculer le progrès en pourcentage
+        participant.progress = Math.round((participant.completedTasks.length / (challenge.tasks?.length || 1)) * 100);
+        participant.lastActivityAt = new Date();
+      }
+
+      await challenge.save();
+
+      console.log('   ✅ Progrès mis à jour avec succès');
+
+      const community = await this.communityModel.findOne({ id: challenge.communityId });
+      return this.transformToResponseDto(challenge, community || undefined);
+
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException || error instanceof BadRequestException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la mise à jour du progrès:', error);
+      throw new BadRequestException('Erreur lors de la mise à jour du progrès');
+    }
+  }
 }

@@ -12,7 +12,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery, ApiParam, ApiBody } from '@nestjs/swagger';
 import { ChallengeService } from './challenge.service';
 import { CreateChallengeDto } from '../dto-challenge/create-challenge.dto';
 import { UpdateChallengeDto } from '../dto-challenge/update-challenge.dto';
@@ -25,6 +25,11 @@ import {
   CheckChallengeAccessDto,
   ChallengeAccessResponseDto
 } from '../dto-challenge/challenge-pricing.dto';
+import { 
+  UpdateChallengeSequentialProgressionDto, 
+  TaskAccessResponseDto, 
+  UnlockedTasksResponseDto 
+} from '../dto-challenge/sequential-progression.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('Challenges')
@@ -355,5 +360,119 @@ export class ChallengeController {
   @ApiResponse({ status: 200, description: 'Statistiques récupérées avec succès' })
   async getStats(@Param('id') id: string) {
     return this.challengeService.getChallengeStats(id);
+  }
+
+  // ============ SEQUENTIAL PROGRESSION ENDPOINTS ============
+
+  @Patch(':id/sequential-progression')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ 
+    summary: 'Activer/désactiver la progression séquentielle d\'un défi',
+    description: 'Permet au créateur du défi d\'activer ou désactiver la progression séquentielle. Quand activée, les utilisateurs doivent compléter la tâche précédente pour accéder à la suivante.'
+  })
+  @ApiParam({ name: 'id', description: 'ID du défi', type: 'string' })
+  @ApiBody({ type: UpdateChallengeSequentialProgressionDto })
+  @ApiResponse({ status: 200, description: 'Progression séquentielle mise à jour avec succès', type: ChallengeResponseDto })
+  @ApiResponse({ status: 403, description: 'Accès non autorisé' })
+  @ApiResponse({ status: 404, description: 'Défi non trouvé' })
+  async updateSequentialProgression(
+    @Param('id') id: string,
+    @Body() dto: UpdateChallengeSequentialProgressionDto,
+    @Request() req: any
+  ): Promise<ChallengeResponseDto> {
+    return this.challengeService.updateSequentialProgression(
+      id, 
+      dto.enabled, 
+      dto.unlockMessage, 
+      req.user.userId
+    );
+  }
+
+  @Get(':id/tasks/:taskId/access')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ 
+    summary: 'Vérifier l\'accès à une tâche avec progression séquentielle',
+    description: 'Vérifie si l\'utilisateur peut accéder à une tâche spécifique en tenant compte de la progression séquentielle.'
+  })
+  @ApiParam({ name: 'id', description: 'ID du défi', type: 'string' })
+  @ApiParam({ name: 'taskId', description: 'ID de la tâche', type: 'string' })
+  @ApiResponse({ status: 200, description: 'Accès vérifié avec succès', type: TaskAccessResponseDto })
+  @ApiResponse({ status: 401, description: 'Non autorisé' })
+  @ApiResponse({ status: 404, description: 'Défi, tâche ou utilisateur non trouvé' })
+  async checkTaskAccessWithSequential(
+    @Param('id') id: string,
+    @Param('taskId') taskId: string,
+    @Request() req: any
+  ): Promise<TaskAccessResponseDto> {
+    return this.challengeService.checkTaskAccessWithSequential(id, taskId, req.user.userId);
+  }
+
+  @Get(':id/unlocked-tasks')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ 
+    summary: 'Obtenir les tâches déverrouillées pour l\'utilisateur',
+    description: 'Récupère la liste des tâches déverrouillées pour l\'utilisateur connecté, avec leur statut de completion.'
+  })
+  @ApiParam({ name: 'id', description: 'ID du défi', type: 'string' })
+  @ApiResponse({ status: 200, description: 'Tâches déverrouillées récupérées avec succès', type: UnlockedTasksResponseDto })
+  @ApiResponse({ status: 401, description: 'Non autorisé' })
+  @ApiResponse({ status: 404, description: 'Défi ou utilisateur non trouvé' })
+  async getUnlockedTasks(
+    @Param('id') id: string,
+    @Request() req: any
+  ): Promise<UnlockedTasksResponseDto> {
+    return this.challengeService.getUnlockedTasks(id, req.user.userId);
+  }
+
+  @Post(':id/tasks/:taskId/unlock')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ 
+    summary: 'Déverrouiller manuellement une tâche',
+    description: 'Permet au créateur du défi de déverrouiller manuellement une tâche pour un utilisateur spécifique.'
+  })
+  @ApiParam({ name: 'id', description: 'ID du défi', type: 'string' })
+  @ApiParam({ name: 'taskId', description: 'ID de la tâche', type: 'string' })
+  @ApiBody({ 
+    schema: { 
+      type: 'object', 
+      properties: { 
+        userId: { type: 'string', description: 'ID de l\'utilisateur cible' } 
+      },
+      required: ['userId']
+    }
+  })
+  @ApiResponse({ status: 200, description: 'Tâche déverrouillée avec succès' })
+  @ApiResponse({ status: 403, description: 'Accès non autorisé' })
+  @ApiResponse({ status: 404, description: 'Défi, tâche ou utilisateur non trouvé' })
+  async unlockTaskManually(
+    @Param('id') id: string,
+    @Param('taskId') taskId: string,
+    @Body('userId') userId: string,
+    @Request() req: any
+  ): Promise<{ message: string }> {
+    return this.challengeService.unlockTaskManually(id, taskId, userId, req.user.userId);
+  }
+
+  @Patch('progress/sequential')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ 
+    summary: 'Mettre à jour le progrès d\'un participant avec vérification séquentielle',
+    description: 'Met à jour le progrès d\'un participant en vérifiant d\'abord l\'accès séquentiel à la tâche.'
+  })
+  @ApiBody({ type: UpdateProgressDto })
+  @ApiResponse({ status: 200, description: 'Progrès mis à jour avec succès', type: ChallengeResponseDto })
+  @ApiResponse({ status: 400, description: 'Impossible de mettre à jour le progrès' })
+  @ApiResponse({ status: 403, description: 'Accès refusé - progression séquentielle requise' })
+  @ApiResponse({ status: 404, description: 'Défi ou tâche non trouvé' })
+  async updateProgressWithSequential(
+    @Body() updateProgressDto: UpdateProgressDto,
+    @Request() req: any
+  ): Promise<ChallengeResponseDto> {
+    return this.challengeService.updateProgressWithSequential(updateProgressDto, req.user.userId);
   }
 }

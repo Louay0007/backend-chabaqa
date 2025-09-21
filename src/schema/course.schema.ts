@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Sous-schéma pour les ressources d'un cours
@@ -336,6 +337,8 @@ export interface CoursDocument extends Document {
   requirements?: string[];
   notes?: string;
   ressources?: CourseResource[];
+  sequentialProgression: boolean;
+  unlockMessage?: string;
   createdAt: Date;
   updatedAt: Date;
 
@@ -356,6 +359,13 @@ export interface CoursDocument extends Document {
   obtenirNombreInscriptions(): number;
   ajouterRessource(ressource: CourseResource): void;
   supprimerRessource(ressourceId: string): void;
+  
+  // Méthodes pour la progression séquentielle
+  activerProgressionSequentielle(message?: string): void;
+  desactiverProgressionSequentielle(): void;
+  obtenirChapitrePrecedent(chapitreId: string): CourseChapter | undefined;
+  obtenirChapitreSuivant(chapitreId: string): CourseChapter | undefined;
+  verifierAccesChapitre(chapitreId: string, progression: CourseProgress[]): { hasAccess: boolean; reason: string; requiredChapter?: CourseChapter };
 }
 
 /**
@@ -642,6 +652,25 @@ export class Cours {
     default: []
   })
   ressources?: CourseResource[];
+
+  /**
+   * Progression séquentielle activée
+   * Si true, les utilisateurs doivent compléter le chapitre précédent pour accéder au suivant
+   */
+  @Prop({
+    type: Boolean,
+    default: false
+  })
+  sequentialProgression: boolean;
+
+  /**
+   * Message personnalisé affiché quand un chapitre est verrouillé
+   */
+  @Prop({
+    trim: true,
+    maxlength: 500
+  })
+  unlockMessage?: string;
 
   /**
    * Date de création
@@ -936,4 +965,127 @@ CourseProgressSchema.methods.ajouterTempsVisionne = function(temps: number) {
 
 CourseProgressSchema.methods.mettreAJourDernierAcces = function() {
   this.lastAccessedAt = new Date();
+};
+
+// ============= MÉTHODES POUR LA PROGRESSION SÉQUENTIELLE =============
+
+// Méthode pour activer la progression séquentielle
+CoursSchema.methods.activerProgressionSequentielle = function(message?: string) {
+  this.sequentialProgression = true;
+  if (message) {
+    this.unlockMessage = message;
+  }
+};
+
+// Méthode pour désactiver la progression séquentielle
+CoursSchema.methods.desactiverProgressionSequentielle = function() {
+  this.sequentialProgression = false;
+  this.unlockMessage = undefined;
+};
+
+// Méthode pour obtenir le chapitre précédent
+CoursSchema.methods.obtenirChapitrePrecedent = function(chapitreId: string): CourseChapter | undefined {
+  // Trouver le chapitre actuel
+  let chapitreActuel: CourseChapter | undefined;
+  let sectionActuelle: CourseSection | undefined;
+  
+  for (const section of this.sections) {
+    const chapitre = section.chapitres.find(c => c.id === chapitreId);
+    if (chapitre) {
+      chapitreActuel = chapitre;
+      sectionActuelle = section;
+      break;
+    }
+  }
+  
+  if (!chapitreActuel || !sectionActuelle) {
+    return undefined;
+  }
+  
+  // Si c'est le premier chapitre de la section
+  if (chapitreActuel.ordre === 1) {
+    // Chercher la section précédente
+    const sectionsTriees = [...this.sections].sort((a, b) => a.ordre - b.ordre);
+    const indexSectionActuelle = sectionsTriees.findIndex(s => s.id === sectionActuelle.id);
+    
+    if (indexSectionActuelle > 0) {
+      const sectionPrecedente = sectionsTriees[indexSectionActuelle - 1];
+      const chapitresTries = [...sectionPrecedente.chapitres].sort((a, b) => a.ordre - b.ordre);
+      return chapitresTries[chapitresTries.length - 1]; // Dernier chapitre de la section précédente
+    }
+    
+    return undefined; // Premier chapitre du cours
+  } else {
+    // Chapitre précédent dans la même section
+    const chapitresTries = [...sectionActuelle.chapitres].sort((a, b) => a.ordre - b.ordre);
+    const indexChapitreActuel = chapitresTries.findIndex(c => c.id === chapitreId);
+    return chapitresTries[indexChapitreActuel - 1];
+  }
+};
+
+// Méthode pour obtenir le chapitre suivant
+CoursSchema.methods.obtenirChapitreSuivant = function(chapitreId: string): CourseChapter | undefined {
+  // Trouver le chapitre actuel
+  let chapitreActuel: CourseChapter | undefined;
+  let sectionActuelle: CourseSection | undefined;
+  
+  for (const section of this.sections) {
+    const chapitre = section.chapitres.find(c => c.id === chapitreId);
+    if (chapitre) {
+      chapitreActuel = chapitre;
+      sectionActuelle = section;
+      break;
+    }
+  }
+  
+  if (!chapitreActuel || !sectionActuelle) {
+    return undefined;
+  }
+  
+  // Si c'est le dernier chapitre de la section
+  const chapitresTries = [...sectionActuelle.chapitres].sort((a, b) => a.ordre - b.ordre);
+  const indexChapitreActuel = chapitresTries.findIndex(c => c.id === chapitreId);
+  
+  if (indexChapitreActuel === chapitresTries.length - 1) {
+    // Chercher la section suivante
+    const sectionsTriees = [...this.sections].sort((a, b) => a.ordre - b.ordre);
+    const indexSectionActuelle = sectionsTriees.findIndex(s => s.id === sectionActuelle.id);
+    
+    if (indexSectionActuelle < sectionsTriees.length - 1) {
+      const sectionSuivante = sectionsTriees[indexSectionActuelle + 1];
+      const chapitresSuivants = [...sectionSuivante.chapitres].sort((a, b) => a.ordre - b.ordre);
+      return chapitresSuivants[0]; // Premier chapitre de la section suivante
+    }
+    
+    return undefined; // Dernier chapitre du cours
+  } else {
+    // Chapitre suivant dans la même section
+    return chapitresTries[indexChapitreActuel + 1];
+  }
+};
+
+// Méthode pour vérifier l'accès à un chapitre
+CoursSchema.methods.verifierAccesChapitre = function(chapitreId: string, progression: CourseProgress[]): { hasAccess: boolean; reason: string; requiredChapter?: CourseChapter } {
+  // Si la progression séquentielle n'est pas activée, accès libre
+  if (!this.sequentialProgression) {
+    return { hasAccess: true, reason: 'sequential_disabled' };
+  }
+  
+  // Obtenir le chapitre précédent
+  const chapitrePrecedent = this.obtenirChapitrePrecedent(chapitreId);
+  
+  // Si c'est le premier chapitre, accès libre
+  if (!chapitrePrecedent) {
+    return { hasAccess: true, reason: 'first_chapter' };
+  }
+  
+  // Vérifier si le chapitre précédent est complété
+  const progressionPrecedente = progression.find(p => p.chapterId === chapitrePrecedent.id);
+  const isCompleted = progressionPrecedente?.isCompleted || false;
+  
+  return {
+    hasAccess: isCompleted,
+    reason: isCompleted ? 'previous_completed' : 'previous_not_completed',
+    requiredChapter: chapitrePrecedent
+  };
 }; 

@@ -364,6 +364,8 @@ export interface ChallengeDocument extends Document {
   notes?: string;
   resources?: ChallengeResource[];
   tasks?: ChallengeTask[];
+  sequentialProgression: boolean;
+  unlockMessage?: string;
   pricing?: {
     participationFee: number;
     currency: string;
@@ -412,6 +414,13 @@ export interface ChallengeDocument extends Document {
   getDepositAmount(): number;
   calculateDiscount(userType: 'early-bird' | 'group' | 'member'): number;
   canUserAccess(userId: Types.ObjectId, hasPaid: boolean): boolean;
+  
+  // Méthodes pour la progression séquentielle
+  activerProgressionSequentielle(message?: string): void;
+  desactiverProgressionSequentielle(): void;
+  obtenirTachePrecedente(taskId: string): ChallengeTask | undefined;
+  obtenirTacheSuivante(taskId: string): ChallengeTask | undefined;
+  verifierAccesTache(taskId: string, completedTasks: string[]): { hasAccess: boolean; reason: string; requiredTask?: ChallengeTask };
 }
 
 /**
@@ -623,6 +632,25 @@ export class Challenge {
     default: []
   })
   tasks?: ChallengeTask[];
+
+  /**
+   * Progression séquentielle activée
+   * Si true, les utilisateurs doivent compléter la tâche précédente pour accéder à la suivante
+   */
+  @Prop({
+    type: Boolean,
+    default: false
+  })
+  sequentialProgression: boolean;
+
+  /**
+   * Message personnalisé affiché quand une tâche est verrouillée
+   */
+  @Prop({
+    trim: true,
+    maxlength: 500
+  })
+  unlockMessage?: string;
 
   /**
    * Configuration de prix du défi
@@ -925,4 +953,83 @@ ChallengeSchema.methods.canUserAccess = function(userId: Types.ObjectId, hasPaid
   }
   
   return false;
+};
+
+// ============= MÉTHODES POUR LA PROGRESSION SÉQUENTIELLE =============
+
+// Méthode pour activer la progression séquentielle
+ChallengeSchema.methods.activerProgressionSequentielle = function(message?: string) {
+  this.sequentialProgression = true;
+  if (message) {
+    this.unlockMessage = message;
+  }
+};
+
+// Méthode pour désactiver la progression séquentielle
+ChallengeSchema.methods.desactiverProgressionSequentielle = function() {
+  this.sequentialProgression = false;
+  this.unlockMessage = undefined;
+};
+
+// Méthode pour obtenir la tâche précédente
+ChallengeSchema.methods.obtenirTachePrecedente = function(taskId: string): ChallengeTask | undefined {
+  if (!this.tasks || this.tasks.length === 0) {
+    return undefined;
+  }
+  
+  // Trier les tâches par jour
+  const tasksTriees = [...this.tasks].sort((a, b) => a.day - b.day);
+  
+  // Trouver l'index de la tâche actuelle
+  const indexActuel = tasksTriees.findIndex(task => task.id === taskId);
+  
+  if (indexActuel <= 0) {
+    return undefined; // Première tâche ou tâche non trouvée
+  }
+  
+  return tasksTriees[indexActuel - 1];
+};
+
+// Méthode pour obtenir la tâche suivante
+ChallengeSchema.methods.obtenirTacheSuivante = function(taskId: string): ChallengeTask | undefined {
+  if (!this.tasks || this.tasks.length === 0) {
+    return undefined;
+  }
+  
+  // Trier les tâches par jour
+  const tasksTriees = [...this.tasks].sort((a, b) => a.day - b.day);
+  
+  // Trouver l'index de la tâche actuelle
+  const indexActuel = tasksTriees.findIndex(task => task.id === taskId);
+  
+  if (indexActuel === -1 || indexActuel === tasksTriees.length - 1) {
+    return undefined; // Dernière tâche ou tâche non trouvée
+  }
+  
+  return tasksTriees[indexActuel + 1];
+};
+
+// Méthode pour vérifier l'accès à une tâche
+ChallengeSchema.methods.verifierAccesTache = function(taskId: string, completedTasks: string[]): { hasAccess: boolean; reason: string; requiredTask?: ChallengeTask } {
+  // Si la progression séquentielle n'est pas activée, accès libre
+  if (!this.sequentialProgression) {
+    return { hasAccess: true, reason: 'sequential_disabled' };
+  }
+  
+  // Obtenir la tâche précédente
+  const tachePrecedente = this.obtenirTachePrecedente(taskId);
+  
+  // Si c'est la première tâche, accès libre
+  if (!tachePrecedente) {
+    return { hasAccess: true, reason: 'first_task' };
+  }
+  
+  // Vérifier si la tâche précédente est complétée
+  const isCompleted = completedTasks.includes(tachePrecedente.id);
+  
+  return {
+    hasAccess: isCompleted,
+    reason: isCompleted ? 'previous_completed' : 'previous_not_completed',
+    requiredTask: tachePrecedente
+  };
 };

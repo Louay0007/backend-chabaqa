@@ -1768,4 +1768,330 @@ export class CoursService {
   async getUserCoursRecentActions(userId: string, limit: number = 20) {
     return await this.trackingService.getUserRecentActions(userId, TrackableContentType.COURSE, limit);
   }
+
+  // ============ SEQUENTIAL PROGRESSION METHODS ============
+
+  /**
+   * Activer ou désactiver la progression séquentielle d'un cours
+   * @param coursId ID du cours
+   * @param enabled Activer ou désactiver
+   * @param unlockMessage Message personnalisé pour les chapitres verrouillés
+   * @param userId ID de l'utilisateur (pour vérifier les permissions)
+   * @returns Cours mis à jour
+   */
+  async updateSequentialProgression(
+    coursId: string, 
+    enabled: boolean, 
+    unlockMessage: string | undefined, 
+    userId: string
+  ): Promise<CoursResponseDto> {
+    console.log('🔧 DEBUG - updateSequentialProgression');
+    console.log(`   📋 Cours ID: ${coursId}`);
+    console.log(`   🔒 Enabled: ${enabled}`);
+    console.log(`   💬 Unlock Message: ${unlockMessage}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Vérifier que le cours existe
+      const cours = await this.coursModel.findById(coursId);
+      if (!cours) {
+        throw new NotFoundException('Cours non trouvé');
+      }
+
+      // 2. Vérifier que l'utilisateur est admin de la communauté
+      await this.verifierAdminCommunaute(userId, cours.communityId.toString());
+
+      // 3. Mettre à jour la progression séquentielle
+      if (enabled) {
+        cours.activerProgressionSequentielle(unlockMessage);
+      } else {
+        cours.desactiverProgressionSequentielle();
+      }
+
+      const coursEnregistre = await cours.save();
+
+      console.log('   ✅ Progression séquentielle mise à jour avec succès');
+      console.log(`   🔒 Sequential Progression: ${coursEnregistre.sequentialProgression}`);
+
+      return await this.transformerEnReponse(coursEnregistre);
+
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la mise à jour de la progression séquentielle:', error);
+      throw new BadRequestException('Erreur lors de la mise à jour de la progression séquentielle');
+    }
+  }
+
+  /**
+   * Vérifier l'accès à un chapitre avec la progression séquentielle
+   * @param coursId ID du cours
+   * @param chapitreId ID du chapitre
+   * @param userId ID de l'utilisateur
+   * @returns Informations sur l'accès au chapitre
+   */
+  async checkChapterAccessWithSequential(
+    coursId: string, 
+    chapitreId: string, 
+    userId: string
+  ): Promise<{
+    hasAccess: boolean;
+    reason: string;
+    requiredChapter?: {
+      id: string;
+      titre: string;
+      ordre: number;
+      sectionId: string;
+    };
+    unlockMessage?: string;
+    nextChapter?: {
+      id: string;
+      titre: string;
+      ordre: number;
+      sectionId: string;
+    };
+  }> {
+    console.log('🔧 DEBUG - checkChapterAccessWithSequential');
+    console.log(`   📋 Cours ID: ${coursId}`);
+    console.log(`   📄 Chapitre ID: ${chapitreId}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Récupérer le cours
+      const cours = await this.coursModel.findById(coursId);
+      if (!cours) {
+        throw new NotFoundException('Cours non trouvé');
+      }
+
+      // 2. Récupérer l'inscription de l'utilisateur
+      const enrollment = await this.courseEnrollmentModel.findOne({
+        userId: new Types.ObjectId(userId),
+        courseId: new Types.ObjectId(coursId),
+        isActive: true
+      });
+
+      if (!enrollment) {
+        throw new NotFoundException('Utilisateur non inscrit à ce cours');
+      }
+
+      // 3. Utiliser la méthode du schéma pour vérifier l'accès
+      const accessCheck = cours.verifierAccesChapitre(chapitreId, enrollment.progression || []);
+
+      // 4. Obtenir le chapitre suivant si disponible
+      const nextChapter = cours.obtenirChapitreSuivant(chapitreId);
+
+      console.log('   ✅ Vérification d\'accès terminée');
+      console.log(`   🔓 Has Access: ${accessCheck.hasAccess}`);
+      console.log(`   📝 Reason: ${accessCheck.reason}`);
+
+      return {
+        hasAccess: accessCheck.hasAccess,
+        reason: accessCheck.reason,
+        requiredChapter: accessCheck.requiredChapter ? {
+          id: accessCheck.requiredChapter.id,
+          titre: accessCheck.requiredChapter.titre,
+          ordre: accessCheck.requiredChapter.ordre,
+          sectionId: accessCheck.requiredChapter.sectionId
+        } : undefined,
+        unlockMessage: cours.unlockMessage,
+        nextChapter: nextChapter ? {
+          id: nextChapter.id,
+          titre: nextChapter.titre,
+          ordre: nextChapter.ordre,
+          sectionId: nextChapter.sectionId
+        } : undefined
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la vérification d\'accès au chapitre:', error);
+      throw new BadRequestException('Erreur lors de la vérification d\'accès au chapitre');
+    }
+  }
+
+  /**
+   * Obtenir les chapitres déverrouillés pour un utilisateur
+   * @param coursId ID du cours
+   * @param userId ID de l'utilisateur
+   * @returns Liste des chapitres déverrouillés
+   */
+  async getUnlockedChapters(coursId: string, userId: string): Promise<{
+    unlockedChapters: Array<{
+      id: string;
+      titre: string;
+      ordre: number;
+      sectionId: string;
+      sectionTitre: string;
+      isCompleted: boolean;
+      isUnlocked: boolean;
+    }>;
+    sequentialProgressionEnabled: boolean;
+    unlockMessage?: string;
+  }> {
+    console.log('🔧 DEBUG - getUnlockedChapters');
+    console.log(`   📋 Cours ID: ${coursId}`);
+    console.log(`   👤 User ID: ${userId}`);
+
+    try {
+      // 1. Récupérer le cours
+      const cours = await this.coursModel.findById(coursId);
+      if (!cours) {
+        throw new NotFoundException('Cours non trouvé');
+      }
+
+      // 2. Récupérer l'inscription de l'utilisateur
+      const enrollment = await this.courseEnrollmentModel.findOne({
+        userId: new Types.ObjectId(userId),
+        courseId: new Types.ObjectId(coursId),
+        isActive: true
+      });
+
+      if (!enrollment) {
+        throw new NotFoundException('Utilisateur non inscrit à ce cours');
+      }
+
+      // 3. Construire la liste des chapitres avec leur statut
+      const unlockedChapters: Array<{
+        id: string;
+        titre: string;
+        ordre: number;
+        sectionId: string;
+        sectionTitre: string;
+        isCompleted: boolean;
+        isUnlocked: boolean;
+      }> = [];
+
+      // Trier les sections par ordre
+      const sectionsTriees = [...cours.sections].sort((a, b) => a.ordre - b.ordre);
+
+      for (const section of sectionsTriees) {
+        // Trier les chapitres par ordre
+        const chapitresTries = [...section.chapitres].sort((a, b) => a.ordre - b.ordre);
+
+        for (const chapitre of chapitresTries) {
+          // Vérifier si le chapitre est complété
+          const progression = enrollment.progression.find(p => p.chapterId === chapitre.id);
+          const isCompleted = progression?.isCompleted || false;
+
+          // Vérifier si le chapitre est déverrouillé
+          let isUnlocked = true;
+          if (cours.sequentialProgression) {
+            const accessCheck = cours.verifierAccesChapitre(chapitre.id, enrollment.progression || []);
+            isUnlocked = accessCheck.hasAccess;
+          }
+
+          unlockedChapters.push({
+            id: chapitre.id,
+            titre: chapitre.titre,
+            ordre: chapitre.ordre,
+            sectionId: chapitre.sectionId,
+            sectionTitre: section.titre,
+            isCompleted,
+            isUnlocked
+          });
+        }
+      }
+
+      console.log(`   ✅ ${unlockedChapters.length} chapitres analysés`);
+      console.log(`   🔓 ${unlockedChapters.filter(c => c.isUnlocked).length} chapitres déverrouillés`);
+
+      return {
+        unlockedChapters,
+        sequentialProgressionEnabled: cours.sequentialProgression,
+        unlockMessage: cours.unlockMessage
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors de la récupération des chapitres déverrouillés:', error);
+      throw new BadRequestException('Erreur lors de la récupération des chapitres déverrouillés');
+    }
+  }
+
+  /**
+   * Déverrouiller manuellement un chapitre (pour les créateurs/admins)
+   * @param coursId ID du cours
+   * @param chapitreId ID du chapitre à déverrouiller
+   * @param userId ID de l'utilisateur cible
+   * @param creatorId ID du créateur/admin qui effectue l'action
+   * @returns Message de confirmation
+   */
+  async unlockChapterManually(
+    coursId: string, 
+    chapitreId: string, 
+    userId: string, 
+    creatorId: string
+  ): Promise<{ message: string }> {
+    console.log('🔧 DEBUG - unlockChapterManually');
+    console.log(`   📋 Cours ID: ${coursId}`);
+    console.log(`   📄 Chapitre ID: ${chapitreId}`);
+    console.log(`   👤 Target User ID: ${userId}`);
+    console.log(`   👨‍💼 Creator ID: ${creatorId}`);
+
+    try {
+      // 1. Vérifier que le cours existe
+      const cours = await this.coursModel.findById(coursId);
+      if (!cours) {
+        throw new NotFoundException('Cours non trouvé');
+      }
+
+      // 2. Vérifier que le créateur est admin de la communauté
+      await this.verifierAdminCommunaute(creatorId, cours.communityId.toString());
+
+      // 3. Récupérer l'inscription de l'utilisateur
+      const enrollment = await this.courseEnrollmentModel.findOne({
+        userId: new Types.ObjectId(userId),
+        courseId: new Types.ObjectId(coursId),
+        isActive: true
+      });
+
+      if (!enrollment) {
+        throw new NotFoundException('Utilisateur non inscrit à ce cours');
+      }
+
+      // 4. Créer ou mettre à jour la progression pour ce chapitre
+      let progression = enrollment.progression.find(p => p.chapterId === chapitreId);
+      
+      if (!progression) {
+        progression = {
+          id: new Types.ObjectId().toString(),
+          enrollmentId: enrollment._id,
+          chapterId: chapitreId,
+          isCompleted: false,
+          watchTime: 0,
+          lastAccessedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        enrollment.progression.push(progression as any);
+      }
+
+      // 5. Marquer le chapitre comme accessible (mais pas forcément complété)
+      progression.lastAccessedAt = new Date();
+      progression.updatedAt = new Date();
+      await enrollment.save();
+
+      console.log('   ✅ Chapitre déverrouillé manuellement avec succès');
+
+      return {
+        message: 'Chapitre déverrouillé avec succès'
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) {
+        throw error;
+      }
+      
+      console.error('❌ Erreur lors du déverrouillage manuel du chapitre:', error);
+      throw new BadRequestException('Erreur lors du déverrouillage manuel du chapitre');
+    }
+  }
 } 

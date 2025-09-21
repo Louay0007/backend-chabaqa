@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateCoursDto } from '../dto-cours/create-cours.dto';
 import { AddSectionDto } from '../dto-cours/add-section.dto';
 import { AddChapitreToSectionDto } from '../dto-cours/add-chapitre-to-section.dto';
+import { UpdateSequentialProgressionDto, ChapterAccessResponseDto, UnlockedChaptersResponseDto } from '../dto-cours/sequential-progression.dto';
 
 interface AuthenticatedUser {
 	_id: string;
@@ -21,7 +22,130 @@ export class CoursController {
 	@UseGuards(JwtAuthGuard)
 	@ApiBearerAuth('JWT-auth')
 	@Post('create-cours')
-	@ApiOperation({ summary: 'Créer un cours (avec sections/chapitres optionnels)' })
+	@ApiOperation({ 
+		summary: 'Créer un cours complet',
+		description: 'Créer un nouveau cours avec sections et chapitres optionnels. Seuls les créateurs peuvent créer des cours.'
+	})
+	@ApiBody({ 
+		type: CreateCoursDto,
+		description: 'Données du cours à créer',
+		examples: {
+			'Cours Simple': {
+				summary: 'Création d\'un cours basique',
+				value: {
+					titre: 'Introduction à React',
+					description: 'Apprenez les bases de React',
+					prix: 49.99,
+					isPaid: true,
+					devise: 'TND',
+					communitySlug: 'web-dev-community',
+					isPublished: false
+				}
+			},
+			'Cours Complet': {
+				summary: 'Création d\'un cours avec sections et chapitres',
+				value: {
+					titre: 'Développement Web Full-Stack',
+					description: 'Cours complet pour devenir développeur full-stack',
+					prix: 199.99,
+					isPaid: true,
+					devise: 'TND',
+					communitySlug: 'web-dev-community',
+					isPublished: false,
+					category: 'Programmation',
+					niveau: 'intermédiaire',
+					duree: '40h',
+					learningObjectives: ['Maîtriser React', 'Créer des APIs Node.js'],
+					prerequisites: ['Connaissances HTML/CSS', 'Bases JavaScript'],
+					sections: [
+						{
+							titre: 'Frontend avec React',
+							description: 'Apprentissage de React',
+							ordre: 1,
+							chapitres: [
+								{
+									titre: 'Introduction à React',
+									description: 'Les concepts de base',
+									ordre: 1,
+									contenu: 'Contenu du chapitre...',
+									ressources: [
+										{
+											titre: 'Vidéo d\'introduction',
+											type: 'video',
+											url: 'https://example.com/video1.mp4',
+											description: 'Vidéo explicative'
+										}
+									]
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	})
+	@ApiResponse({ 
+		status: 201, 
+		description: 'Cours créé avec succès',
+		content: {
+			'application/json': {
+				example: {
+					message: 'Cours créé avec succès',
+					cours: {
+						_id: '64a1b2c3d4e5f6789abcdef0',
+						titre: 'Introduction à React',
+						description: 'Apprenez les bases de React',
+						prix: 49.99,
+						isPaid: true,
+						devise: 'TND',
+						communitySlug: 'web-dev-community',
+						creatorId: '64a1b2c3d4e5f6789abcdef1',
+						isPublished: false,
+						createdAt: '2024-01-15T10:00:00.000Z'
+					}
+				}
+			}
+		}
+	})
+	@ApiResponse({ 
+		status: 400, 
+		description: 'Données invalides ou erreur de validation',
+		content: {
+			'application/json': {
+				example: {
+					statusCode: 400,
+					message: ['Le titre est requis', 'Le prix doit être un nombre positif'],
+					error: 'Bad Request'
+				}
+			}
+		}
+	})
+	@ApiResponse({ 
+		status: 401, 
+		description: 'Non autorisé - Token JWT manquant ou invalide',
+		content: {
+			'application/json': {
+				example: {
+					statusCode: 401,
+					message: 'Unauthorized',
+					error: 'Unauthorized'
+				}
+			}
+		}
+	})
+	@ApiResponse({ 
+		status: 404, 
+		description: 'Communauté non trouvée',
+		content: {
+			'application/json': {
+				example: {
+					statusCode: 404,
+					message: 'Communauté non trouvée',
+					error: 'Not Found'
+				}
+			}
+		}
+	})
 	async createCours(@Body() dto: CreateCoursDto, @Req() req) {
 		const user = req.user as AuthenticatedUser;
 		const result = await this.coursService.creerCours(dto, user._id);
@@ -606,5 +730,104 @@ export class CoursController {
 	async getUserRecentActions(@Query('limit') limit = '20', @Req() req) {
 		const user = req.user as AuthenticatedUser;
 		return await this.coursService.getUserCoursRecentActions(user._id, Number(limit) || 20);
+	}
+
+	// ============ SEQUENTIAL PROGRESSION ENDPOINTS ============
+
+	@UseGuards(JwtAuthGuard)
+	@ApiBearerAuth('JWT-auth')
+	@Patch(':id/sequential-progression')
+	@ApiOperation({ 
+		summary: 'Activer/désactiver la progression séquentielle d\'un cours',
+		description: 'Permet au créateur du cours d\'activer ou désactiver la progression séquentielle. Quand activée, les utilisateurs doivent compléter le chapitre précédent pour accéder au suivant.'
+	})
+	@ApiParam({ name: 'id', description: 'ID du cours', type: 'string' })
+	@ApiBody({ type: UpdateSequentialProgressionDto })
+	@ApiResponse({ status: 200, description: 'Progression séquentielle mise à jour avec succès' })
+	@ApiResponse({ status: 403, description: 'Accès non autorisé' })
+	@ApiResponse({ status: 404, description: 'Cours non trouvé' })
+	async updateSequentialProgression(
+		@Param('id') id: string,
+		@Body() dto: UpdateSequentialProgressionDto,
+		@Req() req
+	) {
+		const user = req.user as AuthenticatedUser;
+		return await this.coursService.updateSequentialProgression(
+			id, 
+			dto.enabled, 
+			dto.unlockMessage, 
+			user._id
+		);
+	}
+
+	@UseGuards(JwtAuthGuard)
+	@ApiBearerAuth('JWT-auth')
+	@Get(':id/chapters/:chapterId/access')
+	@ApiOperation({ 
+		summary: 'Vérifier l\'accès à un chapitre avec progression séquentielle',
+		description: 'Vérifie si l\'utilisateur peut accéder à un chapitre spécifique en tenant compte de la progression séquentielle.'
+	})
+	@ApiParam({ name: 'id', description: 'ID du cours', type: 'string' })
+	@ApiParam({ name: 'chapterId', description: 'ID du chapitre', type: 'string' })
+	@ApiResponse({ status: 200, description: 'Accès vérifié avec succès', type: ChapterAccessResponseDto })
+	@ApiResponse({ status: 401, description: 'Non autorisé' })
+	@ApiResponse({ status: 404, description: 'Cours, chapitre ou utilisateur non trouvé' })
+	async checkChapterAccessWithSequential(
+		@Param('id') id: string,
+		@Param('chapterId') chapterId: string,
+		@Req() req
+	) {
+		const user = req.user as AuthenticatedUser;
+		return await this.coursService.checkChapterAccessWithSequential(id, chapterId, user._id);
+	}
+
+	@UseGuards(JwtAuthGuard)
+	@ApiBearerAuth('JWT-auth')
+	@Get(':id/unlocked-chapters')
+	@ApiOperation({ 
+		summary: 'Obtenir les chapitres déverrouillés pour l\'utilisateur',
+		description: 'Récupère la liste des chapitres déverrouillés pour l\'utilisateur connecté, avec leur statut de completion.'
+	})
+	@ApiParam({ name: 'id', description: 'ID du cours', type: 'string' })
+	@ApiResponse({ status: 200, description: 'Chapitres déverrouillés récupérés avec succès', type: UnlockedChaptersResponseDto })
+	@ApiResponse({ status: 401, description: 'Non autorisé' })
+	@ApiResponse({ status: 404, description: 'Cours ou utilisateur non trouvé' })
+	async getUnlockedChapters(
+		@Param('id') id: string,
+		@Req() req
+	) {
+		const user = req.user as AuthenticatedUser;
+		return await this.coursService.getUnlockedChapters(id, user._id);
+	}
+
+	@UseGuards(JwtAuthGuard)
+	@ApiBearerAuth('JWT-auth')
+	@Post(':id/chapters/:chapterId/unlock')
+	@ApiOperation({ 
+		summary: 'Déverrouiller manuellement un chapitre',
+		description: 'Permet au créateur du cours de déverrouiller manuellement un chapitre pour un utilisateur spécifique.'
+	})
+	@ApiParam({ name: 'id', description: 'ID du cours', type: 'string' })
+	@ApiParam({ name: 'chapterId', description: 'ID du chapitre', type: 'string' })
+	@ApiBody({ 
+		schema: { 
+			type: 'object', 
+			properties: { 
+				userId: { type: 'string', description: 'ID de l\'utilisateur cible' } 
+			},
+			required: ['userId']
+		}
+	})
+	@ApiResponse({ status: 200, description: 'Chapitre déverrouillé avec succès' })
+	@ApiResponse({ status: 403, description: 'Accès non autorisé' })
+	@ApiResponse({ status: 404, description: 'Cours, chapitre ou utilisateur non trouvé' })
+	async unlockChapterManually(
+		@Param('id') id: string,
+		@Param('chapterId') chapterId: string,
+		@Body('userId') userId: string,
+		@Req() req
+	) {
+		const user = req.user as AuthenticatedUser;
+		return await this.coursService.unlockChapterManually(id, chapterId, userId, user._id);
 	}
 }
