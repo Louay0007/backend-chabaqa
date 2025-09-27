@@ -10,6 +10,7 @@ import { PolicyService } from '../common/services/policy.service';
 import { PromoService } from '../common/services/promo.service';
 import { FeeService } from '../common/services/fee.service';
 import { TrackableContentType } from '../schema/content-tracking.schema';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class CommunityAffCreaJoinService {
@@ -21,6 +22,7 @@ export class CommunityAffCreaJoinService {
     private readonly policyService: PolicyService,
     private readonly promoService: PromoService,
     private readonly feeService: FeeService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -558,6 +560,16 @@ export class CommunityAffCreaJoinService {
       // Recalculer les rangs
       await this.updateCommunityRanks();
 
+      // Send notification to community creator
+      this.notificationService.createNotification({
+        recipient: community.createur.toString(),
+        sender: userId,
+        type: 'new_community_member',
+        title: 'New Member',
+        body: `${user.name} has joined your community ${community.name}`,
+        data: { communityId: community._id.toString(), userId },
+      });
+
       // Retourner la communauté avec les relations peuplées
       const populatedCommunity = await this.communityModel
         .findById(community._id)
@@ -634,6 +646,16 @@ export class CommunityAffCreaJoinService {
 
       // Recalculer les rangs
       await this.updateCommunityRanks();
+
+      // Send notification to community creator
+      this.notificationService.createNotification({
+        recipient: community.createur.toString(),
+        sender: userId,
+        type: 'new_community_member',
+        title: 'New Member',
+        body: `${user.name} has joined your community ${community.name}`,
+        data: { communityId: community._id.toString(), userId },
+      });
 
       // Retourner la communauté avec les relations peuplées
       const populatedCommunity = await this.communityModel

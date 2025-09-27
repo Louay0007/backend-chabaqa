@@ -6,6 +6,7 @@ import { Cours, CoursDocument } from '../schema/course.schema';
 import { User, UserDocument } from '../schema/user.schema';
 import { StartChapterDto, StartChapterResponseDto } from '../dto-cours/start-chapter.dto';
 import { CompleteSectionDto, CompleteSectionResponseDto } from '../dto-cours/complete-section.dto';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class CourseEnrollmentService {
@@ -13,6 +14,7 @@ export class CourseEnrollmentService {
     @InjectModel(CourseEnrollment.name) private courseEnrollmentModel: Model<CourseEnrollmentDocument>,
     @InjectModel(Cours.name) private coursModel: Model<CoursDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -73,6 +75,15 @@ export class CourseEnrollmentService {
       // Ajouter l'inscription au cours
       course.ajouterInscription(enrollment._id);
       await course.save();
+
+      // Send notification to user
+      this.notificationService.createNotification({
+        recipient: userId,
+        type: 'course_enrollment',
+        title: 'Course Enrollment',
+        body: `You have successfully enrolled in the course "${course.titre}"`,
+        data: { courseId: course._id.toString() },
+      });
     }
 
     // Vérifier l'accès séquentiel si activé

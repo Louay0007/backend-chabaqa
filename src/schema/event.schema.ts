@@ -374,6 +374,18 @@ export class Event {
     trialFeatures?: string[];
   };
 
+  /**
+   * Note moyenne de l'événement
+   */
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  /**
+   * Nombre de notes
+   */
+  @Prop({ type: Number, default: 0 })
+  ratingCount: number;
+
   @Prop({
     type: [EventSpeakerSchema],
     default: []
@@ -437,6 +449,9 @@ export class Event {
     type: Date
   })
   publishedAt?: Date;
+
+  @Prop({ type: Boolean, default: false })
+  reminderSent?: boolean;
 }
 
 export const EventSchema = SchemaFactory.createForClass(Event);

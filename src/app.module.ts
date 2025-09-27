@@ -4,7 +4,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
-import mongoose from 'mongoose';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -35,7 +34,6 @@ import { SubscriptionModule } from './subscription/subscription.module';
 import { StorageUsage, StorageUsageSchema } from './schema/storage-usage.schema';
 import { TrackingController } from './common/controllers/tracking.controller';
 import { PaymentController } from './common/controllers/payment.controller';
-import { SubscriptionService } from './subscription/subscription.service';
 import { Plan, PlanSchema } from './schema/plan.schema';
 import { OrderSchema } from './schema/order.schema';
 import { CoursSchema } from './schema/course.schema';
@@ -45,6 +43,9 @@ import { ProductSchema } from './schema/product.schema';
 import { SessionSchema } from './schema/session.schema';
 import { FlouciModule } from './common/modules/flouci.module';
 import { DmModule } from './dm/dm.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { FeedbackModule } from './feedback/feedback.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
@@ -119,6 +120,9 @@ import { DmModule } from './dm/dm.module';
     PromoModule,
     FlouciModule,
     DmModule,
+    AnalyticsModule,
+    FeedbackModule,
+    NotificationModule,
   ],
   controllers: [AppController, UserController, TrackingController, PaymentController],
   providers: [AppService, UserService, EmailService],

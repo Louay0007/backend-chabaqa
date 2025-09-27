@@ -743,6 +743,18 @@ export class Challenge {
   };
 
   /**
+   * Note moyenne du challenge
+   */
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  /**
+   * Nombre de notes
+   */
+  @Prop({ type: Number, default: 0 })
+  ratingCount: number;
+
+  /**
    * Date de création
    */
   createdAt: Date;

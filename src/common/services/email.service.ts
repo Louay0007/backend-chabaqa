@@ -97,6 +97,10 @@ export class EmailService {
 
     try {
       this.logger.log(`📧 Tentative d'envoi d'email 2FA à: ${email}`);
+      // Log the 2FA code to server logs for testing environments
+      if (process.env.NODE_ENV !== 'production') {
+        this.logger.warn(`🔐 2FA code (test): ${code} for ${email}`);
+      }
       const result = await this.transporter.sendMail(mailOptions);
       this.logger.log('✅ Email 2FA envoyé avec succès');
       
@@ -107,6 +111,33 @@ export class EmailService {
     } catch (error) {
       this.logger.error('❌ Erreur lors de l\'envoi d\'email 2FA:', error.message);
       throw new Error(`Erreur lors de l'envoi de l'email 2FA: ${error.message}`);
+    }
+  }
+
+  /**
+   * Envoie un email générique (pour les notifications)
+   */
+  async sendGenericEmail(data: { to: string; subject: string; text: string; html?: string }): Promise<void> {
+    const mailOptions = {
+      from: process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@shabaka.com',
+      to: data.to,
+      subject: data.subject,
+      text: data.text,
+      html: data.html || data.text,
+    };
+
+    try {
+      this.logger.log(`📧 Tentative d'envoi d'email générique à: ${data.to}`);
+      const result = await this.transporter.sendMail(mailOptions);
+      this.logger.log('✅ Email générique envoyé avec succès');
+      
+      // Si c'est Ethereal Email, afficher l'URL de prévisualisation
+      if (result.messageId.includes('ethereal')) {
+        this.logger.log(`🔗 Prévisualisation: https://ethereal.email/message/${result.messageId}`);
+      }
+    } catch (error) {
+      this.logger.error('❌ Erreur lors de l\'envoi d\'email générique:', error.message);
+      throw new Error(`Erreur lors de l'envoi de l'email générique: ${error.message}`);
     }
   }
 

@@ -307,6 +307,18 @@ export class Session {
   };
 
   /**
+   * Note moyenne de la session
+   */
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  /**
+   * Nombre de notes
+   */
+  @Prop({ type: Number, default: 0 })
+  ratingCount: number;
+
+  /**
    * ID de la communauté à laquelle appartient la session
    */
   @Prop({

@@ -24,11 +24,28 @@ async function bootstrap() {
   // Filtre d'exception global
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  // Configuration CORS pour le frontend
+  // Configuration CORS pour le frontend (par défaut: Vite sur 8080)
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080'
+  const allowedOrigins = new Set([
+    frontendUrl,
+    'http://localhost:8080',
+    'http://127.0.0.1:8080',
+  ])
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl) and allowed dev origins
+      if (!origin || allowedOrigins.has(origin)) {
+        callback(null, true)
+      } else {
+        callback(new Error('Not allowed by CORS'))
+      }
+    },
     credentials: true,
-  });
+    methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  })
 
   // Configuration Swagger
   const config = new DocumentBuilder()

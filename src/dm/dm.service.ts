@@ -4,8 +4,10 @@ import { Model, Types } from 'mongoose';
 import { Conversation, ConversationDocument } from '../schema/conversation.schema';
 import { Message, MessageDocument } from '../schema/message.schema';
 import { Community, CommunityDocument } from '../schema/community.schema';
+import { User } from '../schema/user.schema';
 import { PolicyService } from '../common/services/policy.service';
 import { DmGateway } from './dm.gateway';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class DmService {
@@ -13,8 +15,11 @@ export class DmService {
     @InjectModel(Conversation.name) private conversationModel: Model<ConversationDocument>,
     @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
     @InjectModel(Community.name) private communityModel: Model<CommunityDocument>,
+    @InjectModel('User') private userModel: Model<User>,
+
     private readonly policyService: PolicyService,
     private readonly dmGateway: DmGateway,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async startCommunityConversation(userId: string, communityId: string): Promise<ConversationDocument> {
@@ -154,6 +159,19 @@ export class DmService {
     // Emit realtime events
     if (recipientId) {
       this.dmGateway.emitNewMessage(conv._id.toString(), recipientId.toString(), msg);
+
+      // Send notification
+      const sender = await this.userModel.findById(senderId);
+      if (sender) {
+        this.notificationService.createNotification({
+          recipient: recipientId.toString(),
+          sender: senderId,
+          type: 'new_dm_message',
+          title: `New message from ${sender.name}`,
+          body: msg.text || 'You received a new attachment.',
+          data: { conversationId: conv._id.toString() },
+        });
+      }
     }
 
     return msg;

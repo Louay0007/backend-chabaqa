@@ -618,6 +618,18 @@ export class Community {
   inviteLink: string;
 
   /**
+   * Note moyenne de la communauté
+   */
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  /**
+   * Nombre de notes
+   */
+  @Prop({ type: Number, default: 0 })
+  ratingCount: number;
+
+  /**
    * Liste des cours de la communauté
    */
   @Prop({
@@ -652,7 +664,7 @@ CommunitySchema.index({ isActive: 1 });
 CommunitySchema.index({ isPrivate: 1 });
 CommunitySchema.index({ createdAt: -1 });
 CommunitySchema.index({ category: 1 });
-CommunitySchema.index({ rating: -1 });
+
 CommunitySchema.index({ featured: 1 });
 CommunitySchema.index({ tags: 1 });
 CommunitySchema.index({ priceType: 1 });
@@ -729,12 +741,6 @@ CommunitySchema.methods.generateInviteLink = function(baseUrl: string): string {
   return this.inviteLink;
 };
 
-// Méthode pour calculer la note moyenne
-CommunitySchema.methods.updateRating = function(newRating: number): void {
-  // Cette méthode peut être appelée après qu'un utilisateur ait noté la communauté
-  // L'implémentation dépendra de votre logique de notation
-  this.rating = newRating;
-};
 
 // Méthode pour mettre à jour les statistiques
 CommunitySchema.methods.updateStats = function(stats: Partial<CommunityStats>): void {

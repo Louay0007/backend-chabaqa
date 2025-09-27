@@ -673,6 +673,18 @@ export class Cours {
   unlockMessage?: string;
 
   /**
+   * Note moyenne du cours
+   */
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  /**
+   * Nombre de notes
+   */
+  @Prop({ type: Number, default: 0 })
+  ratingCount: number;
+
+  /**
    * Date de création
    */
   createdAt: Date;

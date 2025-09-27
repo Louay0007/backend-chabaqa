@@ -279,16 +279,7 @@ export class Product {
   })
   files?: ProductFile[];
 
-  /**
-   * Note moyenne du produit
-   */
-  @Prop({
-    type: Number,
-    min: 0,
-    max: 5,
-    default: 0
-  })
-  rating?: number;
+
 
   /**
    * Termes de licence
@@ -379,6 +370,18 @@ export class Product {
   };
 
   /**
+   * Note moyenne du produit
+   */
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  /**
+   * Nombre de notes
+   */
+  @Prop({ type: Number, default: 0 })
+  ratingCount: number;
+
+  /**
    * Date de création
    */
   @Prop({
@@ -462,7 +465,7 @@ ProductSchema.index({ creatorId: 1, isPublished: 1 });
 ProductSchema.index({ category: 1, isPublished: 1 });
 ProductSchema.index({ price: 1 });
 ProductSchema.index({ sales: -1 });
-ProductSchema.index({ rating: -1 });
+
 ProductSchema.index({ createdAt: -1 });
 
 // Middleware pour générer l'ID unique avant sauvegarde

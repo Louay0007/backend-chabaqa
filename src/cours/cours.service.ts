@@ -14,6 +14,7 @@ import { PolicyService } from '../common/services/policy.service';
 import { TrackableContentType } from '../schema/content-tracking.schema';
 import { FeeService } from '../common/services/fee.service';
 import { PromoService } from '../common/services/promo.service';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class CoursService {
@@ -28,6 +29,7 @@ export class CoursService {
     private readonly policyService: PolicyService,
     private readonly feeService: FeeService,
     private readonly promoService: PromoService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -439,10 +441,26 @@ export class CoursService {
     }
 
     // Vérifier les permissions
-    await this.verifierAdminCommunaute(userId, cours.communityId);
+    const community = await this.verifierAdminCommunaute(userId, cours.communityId);
 
     cours.togglePublication();
     await cours.save();
+
+    // Send notification to community members when a course is published
+    if (cours.isPublished) {
+      const members = await this.userModel.find({ _id: { $in: community.members } });
+      for (const member of members) {
+        if (member._id.toString() !== userId) { // Don't notify the user who published the course
+          this.notificationService.createNotification({
+            recipient: member._id.toString(),
+            type: 'new_course',
+            title: 'New Course Published',
+            body: `A new course "${cours.titre}" has been published in your community "${community.name}"`,
+            data: { courseId: cours._id.toString(), communityId: community._id.toString() },
+          });
+        }
+      }
+    }
 
     return await this.transformerEnReponse(cours);
   }
