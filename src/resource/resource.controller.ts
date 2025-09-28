@@ -15,6 +15,16 @@ export class ResourceController {
   constructor(private readonly resourceService: ResourceService) {}
 
   /**
+   * Obtenir toutes les ressources (endpoint simple)
+   */
+  @Get()
+  @ApiOperation({ summary: 'Obtenir toutes les ressources' })
+  @ApiResponse({ status: 200, description: 'Liste des ressources récupérée avec succès' })
+  async getAllResources() {
+    return this.resourceService.findAllPublishedSummary();
+  }
+
+  /**
    * Obtenir un résumé de toutes les ressources publiées (champs limités)
    */
   

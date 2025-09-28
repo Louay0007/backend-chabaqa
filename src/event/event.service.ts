@@ -618,15 +618,31 @@ export class EventService {
     if (!communityData) {
       communityData = await this.communityModel.findById(event.communityId).select('name slug');
     }
-    if (!communityData) {
-      throw new NotFoundException('Communauté non trouvée');
-    }
+    
+    // Provide default values if community not found
+    const communityInfo = communityData ? {
+      id: communityData._id.toString(),
+      name: communityData.name,
+      slug: communityData.slug
+    } : {
+      id: event.communityId?.toString() || 'unknown',
+      name: 'Unknown Community',
+      slug: 'unknown-community'
+    };
 
     // Récupérer les informations du créateur
     const creator = await this.userModel.findById(event.creatorId).select('name email profile_picture');
-    if (!creator) {
-      throw new NotFoundException('Créateur non trouvé');
-    }
+    const creatorInfo = creator ? {
+      id: creator._id.toString(),
+      name: creator.name,
+      email: creator.email,
+      profile_picture: creator.profile_picture
+    } : {
+      id: event.creatorId?.toString() || 'unknown',
+      name: 'Unknown Creator',
+      email: 'unknown@example.com',
+      profile_picture: 'https://placehold.co/64x64?text=UC'
+    };
 
     // Transformer les participants
     const attendees = await Promise.all(
@@ -643,7 +659,7 @@ export class EventService {
             email: user.email
           },
           ticketType: attendee.ticketType,
-          registeredAt: attendee.registeredAt.toISOString(),
+          registeredAt: attendee.registeredAt?.toISOString() || new Date().toISOString(),
           checkedIn: attendee.checkedIn,
           checkedInAt: attendee.checkedInAt?.toISOString()
         };
@@ -654,7 +670,7 @@ export class EventService {
       id: event.id,
       title: event.title,
       description: event.description,
-      startDate: event.startDate.toISOString(),
+      startDate: event.startDate?.toISOString() || new Date().toISOString(),
       endDate: event.endDate?.toISOString(),
       startTime: event.startTime,
       endTime: event.endTime,
@@ -694,24 +710,16 @@ export class EventService {
         isActive: session.isActive,
         attendance: session.attendance
       })),
-      community: {
-        id: communityData._id.toString(),
-        name: communityData.name,
-        slug: communityData.slug
-      },
-      creator: {
-        id: creator._id.toString(),
-        name: creator.name,
-        email: creator.email
-      },
+      community: communityInfo,
+      creator: creatorInfo,
       totalRevenue: event.totalRevenue,
       totalAttendees: event.totalAttendees,
       averageAttendance: event.averageAttendance,
       tags: event.tags,
       isPublished: event.isPublished,
       publishedAt: event.publishedAt?.toISOString(),
-      createdAt: (event as any).createdAt.toISOString(),
-      updatedAt: (event as any).updatedAt.toISOString()
+      createdAt: (event as any).createdAt?.toISOString() || new Date().toISOString(),
+      updatedAt: (event as any).updatedAt?.toISOString() || new Date().toISOString()
     };
   }
 }

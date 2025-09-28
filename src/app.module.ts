@@ -46,6 +46,7 @@ import { DmModule } from './dm/dm.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { NotificationModule } from './notification/notification.module';
+import { CommunitiesModule } from './communities/communities.module';
 
 @Module({
   imports: [
@@ -123,6 +124,7 @@ import { NotificationModule } from './notification/notification.module';
     AnalyticsModule,
     FeedbackModule,
     NotificationModule,
+    CommunitiesModule,
   ],
   controllers: [AppController, UserController, TrackingController, PaymentController],
   providers: [AppService, UserService, EmailService],

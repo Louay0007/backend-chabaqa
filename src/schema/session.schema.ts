@@ -2,6 +2,107 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 
 /**
+ * Sous-schéma pour les créneaux horaires disponibles
+ */
+@Schema({ _id: false })
+export class AvailableSlot {
+  @Prop({
+    required: true,
+    type: String
+  })
+  id: string;
+
+  @Prop({
+    required: true,
+    type: Date
+  })
+  startTime: Date;
+
+  @Prop({
+    required: true,
+    type: Date
+  })
+  endTime: Date;
+
+  @Prop({
+    type: Boolean,
+    default: true
+  })
+  isAvailable: boolean;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'User'
+  })
+  bookedBy?: Types.ObjectId;
+
+  @Prop({
+    type: Date
+  })
+  bookedAt?: Date;
+
+  @Prop({
+    type: Date,
+    default: Date.now
+  })
+  createdAt: Date;
+}
+
+export const AvailableSlotSchema = SchemaFactory.createForClass(AvailableSlot);
+
+/**
+ * Sous-schéma pour les heures de disponibilité récurrentes
+ */
+@Schema({ _id: false })
+export class RecurringAvailability {
+  @Prop({
+    required: true,
+    type: String
+  })
+  id: string;
+
+  @Prop({
+    required: true,
+    type: Number,
+    min: 0,
+    max: 6
+  })
+  dayOfWeek: number; // 0 = Sunday, 1 = Monday, etc.
+
+  @Prop({
+    required: true,
+    type: String
+  })
+  startTime: string; // "09:00"
+
+  @Prop({
+    required: true,
+    type: String
+  })
+  endTime: string; // "17:00"
+
+  @Prop({
+    type: Number,
+    default: 60
+  })
+  slotDuration: number; // Duration in minutes
+
+  @Prop({
+    type: Boolean,
+    default: true
+  })
+  isActive: boolean;
+
+  @Prop({
+    type: Date,
+    default: Date.now
+  })
+  createdAt: Date;
+}
+
+export const RecurringAvailabilitySchema = SchemaFactory.createForClass(RecurringAvailability);
+
+/**
  * Sous-schéma pour les ressources d'une session
  */
 @Schema({ _id: false })
@@ -152,6 +253,12 @@ export interface SessionDocument extends Document {
   maxBookingsPerWeek?: number;
   notes?: string;
   resources?: SessionResource[];
+  
+  // NEW: Available hours and slots
+  recurringAvailability?: RecurringAvailability[];
+  availableSlots?: AvailableSlot[];
+  autoGenerateSlots?: boolean;
+  advanceBookingDays?: number;
 
   // Méthodes du schéma
   addBooking(booking: SessionBooking): void;
@@ -164,6 +271,15 @@ export interface SessionDocument extends Document {
   canBookMore(): boolean;
   addResource(resource: SessionResource): void;
   removeResource(resourceId: string): void;
+  
+  // NEW: Available hours methods
+  addRecurringAvailability(availability: RecurringAvailability): void;
+  removeRecurringAvailability(availabilityId: string): void;
+  generateAvailableSlots(startDate: Date, endDate: Date): void;
+  getAvailableSlots(startDate?: Date, endDate?: Date): AvailableSlot[];
+  bookSlot(slotId: string, userId: string): boolean;
+  cancelSlot(slotId: string): boolean;
+  getSlot(slotId: string): AvailableSlot | undefined;
 }
 
 /**
@@ -395,6 +511,44 @@ export class Session {
   resources?: SessionResource[];
 
   /**
+   * Disponibilité récurrente du créateur
+   */
+  @Prop({
+    type: [RecurringAvailabilitySchema],
+    default: []
+  })
+  recurringAvailability?: RecurringAvailability[];
+
+  /**
+   * Créneaux horaires disponibles générés
+   */
+  @Prop({
+    type: [AvailableSlotSchema],
+    default: []
+  })
+  availableSlots?: AvailableSlot[];
+
+  /**
+   * Génération automatique des créneaux
+   */
+  @Prop({
+    type: Boolean,
+    default: false
+  })
+  autoGenerateSlots?: boolean;
+
+  /**
+   * Nombre de jours à l'avance pour la réservation
+   */
+  @Prop({
+    type: Number,
+    default: 30,
+    min: 1,
+    max: 90
+  })
+  advanceBookingDays?: number;
+
+  /**
    * Date de création
    */
   createdAt: Date;
@@ -547,4 +701,133 @@ SessionSchema.methods.addResource = function(resource: SessionResource): void {
 // Méthode pour supprimer une ressource
 SessionSchema.methods.removeResource = function(resourceId: string): void {
   this.resources = this.resources.filter(resource => resource.id !== resourceId);
+};
+
+// ============= MÉTHODES POUR LA DISPONIBILITÉ RÉCURRENTE =============
+
+// Méthode pour ajouter une disponibilité récurrente
+SessionSchema.methods.addRecurringAvailability = function(availability: RecurringAvailability): void {
+  if (!availability.id) {
+    availability.id = new Types.ObjectId().toString();
+  }
+  this.recurringAvailability = this.recurringAvailability || [];
+  this.recurringAvailability.push(availability);
+};
+
+// Méthode pour supprimer une disponibilité récurrente
+SessionSchema.methods.removeRecurringAvailability = function(availabilityId: string): void {
+  this.recurringAvailability = this.recurringAvailability.filter(av => av.id !== availabilityId);
+};
+
+// ============= MÉTHODES POUR LES CRÉNEAUX DISPONIBLES =============
+
+// Méthode pour générer les créneaux disponibles
+SessionSchema.methods.generateAvailableSlots = function(startDate: Date, endDate: Date): void {
+  if (!this.recurringAvailability || this.recurringAvailability.length === 0) {
+    return;
+  }
+
+  this.availableSlots = this.availableSlots || [];
+  const newSlots: AvailableSlot[] = [];
+
+  // Parcourir chaque jour dans la plage de dates
+  for (let date = new Date(startDate); date <= endDate; date.setDate(date.getDate() + 1)) {
+    const dayOfWeek = date.getDay();
+    
+    // Trouver les disponibilités pour ce jour de la semaine
+    const dayAvailability = this.recurringAvailability.filter(av => 
+      av.dayOfWeek === dayOfWeek && av.isActive
+    );
+
+    for (const availability of dayAvailability) {
+      const [startHour, startMinute] = availability.startTime.split(':').map(Number);
+      const [endHour, endMinute] = availability.endTime.split(':').map(Number);
+      
+      const startDateTime = new Date(date);
+      startDateTime.setHours(startHour, startMinute, 0, 0);
+      
+      const endDateTime = new Date(date);
+      endDateTime.setHours(endHour, endMinute, 0, 0);
+      
+      // Générer les créneaux pour cette plage horaire
+      let currentSlot = new Date(startDateTime);
+      while (currentSlot < endDateTime) {
+        const slotEnd = new Date(currentSlot.getTime() + availability.slotDuration * 60000);
+        
+        if (slotEnd <= endDateTime) {
+          // Vérifier si ce créneau n'existe pas déjà
+          const existingSlot = this.availableSlots.find(slot => 
+            slot.startTime.getTime() === currentSlot.getTime()
+          );
+          
+          if (!existingSlot) {
+            newSlots.push({
+              id: new Types.ObjectId().toString(),
+              startTime: new Date(currentSlot),
+              endTime: new Date(slotEnd),
+              isAvailable: true,
+              createdAt: new Date()
+            });
+          }
+        }
+        
+        currentSlot = new Date(currentSlot.getTime() + availability.slotDuration * 60000);
+      }
+    }
+  }
+
+  // Ajouter les nouveaux créneaux
+  this.availableSlots.push(...newSlots);
+  
+  // Trier par date de début
+  this.availableSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+};
+
+// Méthode pour obtenir les créneaux disponibles
+SessionSchema.methods.getAvailableSlots = function(startDate?: Date, endDate?: Date): AvailableSlot[] {
+  let slots = this.availableSlots || [];
+  
+  // Filtrer par plage de dates si spécifiée
+  if (startDate) {
+    slots = slots.filter(slot => slot.startTime >= startDate);
+  }
+  if (endDate) {
+    slots = slots.filter(slot => slot.startTime <= endDate);
+  }
+  
+  // Retourner seulement les créneaux disponibles
+  return slots.filter(slot => slot.isAvailable);
+};
+
+// Méthode pour réserver un créneau
+SessionSchema.methods.bookSlot = function(slotId: string, userId: string): boolean {
+  const slot = this.availableSlots.find(s => s.id === slotId);
+  if (!slot || !slot.isAvailable) {
+    return false;
+  }
+  
+  slot.isAvailable = false;
+  slot.bookedBy = new Types.ObjectId(userId);
+  slot.bookedAt = new Date();
+  
+  return true;
+};
+
+// Méthode pour annuler un créneau
+SessionSchema.methods.cancelSlot = function(slotId: string): boolean {
+  const slot = this.availableSlots.find(s => s.id === slotId);
+  if (!slot) {
+    return false;
+  }
+  
+  slot.isAvailable = true;
+  slot.bookedBy = undefined;
+  slot.bookedAt = undefined;
+  
+  return true;
+};
+
+// Méthode pour obtenir un créneau
+SessionSchema.methods.getSlot = function(slotId: string): AvailableSlot | undefined {
+  return this.availableSlots.find(s => s.id === slotId);
 };

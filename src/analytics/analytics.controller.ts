@@ -70,6 +70,18 @@ export class AnalyticsController {
     return this.analyticsService.exportCsv(creatorId, scope, fromDate, toDate);
   }
 
+  @Get('communities')
+  @ApiOperation({ summary: 'Communities analytics (plan-gated)' })
+  @ApiQuery({ name: 'from', required: false })
+  @ApiQuery({ name: 'to', required: false })
+  async getCommunities(@Req() req, @Query('from') from?: string, @Query('to') to?: string) {
+    const user = req.user;
+    const creatorId = user.sub || user._id || user.userId;
+    const toDate = to ? new Date(to) : new Date();
+    const fromDate = from ? new Date(from) : new Date(toDate.getTime() - 30 * 24 * 3600 * 1000);
+    return this.analyticsService.getCommunities(creatorId, fromDate, toDate);
+  }
+
   @Get('courses')
   @ApiOperation({ summary: 'Courses analytics (plan-gated)' })
   @ApiQuery({ name: 'from', required: false })

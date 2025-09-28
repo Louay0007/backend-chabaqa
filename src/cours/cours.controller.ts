@@ -17,6 +17,63 @@ interface AuthenticatedUser {
 export class CoursController {
 	constructor(private readonly coursService: CoursService) {}
 
+	// ============ LISTE DES COURS ============
+
+	@Get()
+	@ApiOperation({ 
+		summary: 'Récupérer la liste des cours',
+		description: 'Récupère tous les cours avec pagination et filtres'
+	})
+	@ApiQuery({ name: 'page', required: false, type: Number, description: 'Numéro de page' })
+	@ApiQuery({ name: 'limit', required: false, type: Number, description: 'Nombre d\'éléments par page' })
+	@ApiQuery({ name: 'category', required: false, type: String, description: 'Filtrer par catégorie' })
+	@ApiQuery({ name: 'niveau', required: false, type: String, description: 'Filtrer par niveau' })
+	@ApiQuery({ name: 'search', required: false, type: String, description: 'Rechercher dans le titre et la description' })
+	@ApiResponse({ 
+		status: 200, 
+		description: 'Liste des cours récupérée avec succès',
+		schema: {
+			example: {
+				success: true,
+				message: 'Cours récupérés avec succès',
+				data: {
+					courses: [
+						{
+							id: '1',
+							titre: 'Introduction à React',
+							description: 'Apprenez les bases de React',
+							prix: 49.99,
+							devise: 'TND',
+							category: 'Programmation',
+							niveau: 'débutant',
+							duree: '20h',
+							creator: {
+								name: 'John Doe',
+								avatar: 'https://example.com/avatar.jpg'
+							},
+							createdAt: '2024-01-15T10:30:00Z'
+						}
+					],
+					pagination: {
+						page: 1,
+						limit: 10,
+						total: 25,
+						pages: 3
+					}
+				}
+			}
+		}
+	})
+	async getCourses(
+		@Query('page') page: number = 1,
+		@Query('limit') limit: number = 10,
+		@Query('category') category?: string,
+		@Query('niveau') niveau?: string,
+		@Query('search') search?: string
+	) {
+		return this.coursService.getCourses(page, limit, category, niveau, search);
+	}
+
 	// ============ CRÉATION DE COURS ============
 
 	@UseGuards(JwtAuthGuard)

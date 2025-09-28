@@ -24,6 +24,9 @@ async function bootstrap() {
   // Filtre d'exception global
   app.useGlobalFilters(new HttpExceptionFilter());
 
+  // Configuration du préfixe global pour l'API
+  app.setGlobalPrefix('api');
+
   // Configuration CORS pour le frontend (par défaut: Vite sur 8080)
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080'
   const allowedOrigins = new Set([

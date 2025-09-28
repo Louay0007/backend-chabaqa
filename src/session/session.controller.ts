@@ -18,6 +18,8 @@ import { CreateSessionDto } from '../dto-session/create-session.dto';
 import { UpdateSessionDto } from '../dto-session/update-session.dto';
 import { BookSessionDto, ConfirmBookingDto, CancelBookingDto, CompleteSessionDto } from '../dto-session/book-session.dto';
 import { SessionResponseDto, SessionListResponseDto, UserBookingsResponseDto, CreatorBookingsResponseDto } from '../dto-session/session-response.dto';
+import { SetAvailableHoursDto, GenerateSlotsDto, BookSlotDto, GetAvailableSlotsDto } from '../dto-session/available-hours.dto';
+import { AvailableSlotsResponseDto, AvailableHoursResponseDto } from '../dto-session/available-slots-response.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('Sessions')
@@ -192,5 +194,101 @@ export class SessionController {
   @ApiResponse({ status: 200, description: 'Réservations du créateur récupérées avec succès', type: CreatorBookingsResponseDto })
   async getCreatorBookings(@Request() req: any): Promise<CreatorBookingsResponseDto> {
     return this.sessionService.getCreatorBookings(req.user.userId);
+  }
+
+  // ============ GESTION DES HEURES DE DISPONIBILITÉ ============
+
+  @Post(':id/available-hours')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Définir les heures de disponibilité pour une session' })
+  @ApiResponse({ status: 200, description: 'Heures de disponibilité définies avec succès', type: AvailableHoursResponseDto })
+  @ApiResponse({ status: 403, description: 'Accès non autorisé' })
+  @ApiResponse({ status: 404, description: 'Session non trouvée' })
+  async setAvailableHours(
+    @Param('id') sessionId: string,
+    @Body() setAvailableHoursDto: SetAvailableHoursDto,
+    @Request() req: any
+  ): Promise<AvailableHoursResponseDto> {
+    return this.sessionService.setAvailableHours(sessionId, setAvailableHoursDto, req.user.userId);
+  }
+
+  @Get(':id/available-hours')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Récupérer les heures de disponibilité d\'une session' })
+  @ApiResponse({ status: 200, description: 'Heures de disponibilité récupérées avec succès', type: AvailableHoursResponseDto })
+  @ApiResponse({ status: 404, description: 'Session non trouvée' })
+  async getAvailableHours(
+    @Param('id') sessionId: string,
+    @Request() req: any
+  ): Promise<AvailableHoursResponseDto> {
+    return this.sessionService.getAvailableHours(sessionId, req.user.userId);
+  }
+
+  @Post(':id/generate-slots')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Générer les créneaux disponibles pour une session' })
+  @ApiResponse({ status: 200, description: 'Créneaux générés avec succès', type: AvailableSlotsResponseDto })
+  @ApiResponse({ status: 403, description: 'Accès non autorisé' })
+  @ApiResponse({ status: 404, description: 'Session non trouvée' })
+  async generateAvailableSlots(
+    @Param('id') sessionId: string,
+    @Body() generateSlotsDto: GenerateSlotsDto,
+    @Request() req: any
+  ): Promise<AvailableSlotsResponseDto> {
+    return this.sessionService.generateAvailableSlots(sessionId, generateSlotsDto, req.user.userId);
+  }
+
+  @Get(':id/available-slots')
+  @ApiOperation({ summary: 'Récupérer les créneaux disponibles pour une session' })
+  @ApiResponse({ status: 200, description: 'Créneaux disponibles récupérés avec succès', type: AvailableSlotsResponseDto })
+  @ApiResponse({ status: 404, description: 'Session non trouvée' })
+  @ApiQuery({ name: 'startDate', required: false, description: 'Date de début pour filtrer les créneaux' })
+  @ApiQuery({ name: 'endDate', required: false, description: 'Date de fin pour filtrer les créneaux' })
+  async getAvailableSlots(
+    @Param('id') sessionId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string
+  ): Promise<AvailableSlotsResponseDto> {
+    const getAvailableSlotsDto: GetAvailableSlotsDto = {};
+    if (startDate) getAvailableSlotsDto.startDate = startDate;
+    if (endDate) getAvailableSlotsDto.endDate = endDate;
+    
+    return this.sessionService.getAvailableSlots(sessionId, getAvailableSlotsDto);
+  }
+
+  // ============ RÉSERVATION DE CRÉNEAUX ============
+
+  @Post(':id/book-slot')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Réserver un créneau spécifique' })
+  @ApiResponse({ status: 201, description: 'Créneau réservé avec succès', type: SessionResponseDto })
+  @ApiResponse({ status: 400, description: 'Impossible de réserver le créneau' })
+  @ApiResponse({ status: 404, description: 'Session ou créneau non trouvé' })
+  async bookSlot(
+    @Param('id') sessionId: string,
+    @Body() bookSlotDto: BookSlotDto,
+    @Request() req: any
+  ): Promise<SessionResponseDto> {
+    return this.sessionService.bookSlot(sessionId, bookSlotDto, req.user.userId);
+  }
+
+  @Patch(':id/cancel-slot/:slotId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Annuler un créneau réservé' })
+  @ApiResponse({ status: 200, description: 'Créneau annulé avec succès', type: SessionResponseDto })
+  @ApiResponse({ status: 400, description: 'Impossible d\'annuler le créneau' })
+  @ApiResponse({ status: 403, description: 'Accès non autorisé' })
+  @ApiResponse({ status: 404, description: 'Session ou créneau non trouvé' })
+  async cancelSlot(
+    @Param('id') sessionId: string,
+    @Param('slotId') slotId: string,
+    @Request() req: any
+  ): Promise<SessionResponseDto> {
+    return this.sessionService.cancelSlot(sessionId, slotId, req.user.userId);
   }
 }

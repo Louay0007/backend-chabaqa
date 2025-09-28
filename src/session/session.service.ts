@@ -8,6 +8,8 @@ import { CreateSessionDto } from '../dto-session/create-session.dto';
 import { UpdateSessionDto } from '../dto-session/update-session.dto';
 import { BookSessionDto, ConfirmBookingDto, CancelBookingDto, CompleteSessionDto, UpdateBookingStatusDto } from '../dto-session/book-session.dto';
 import { SessionResponseDto, SessionListResponseDto, UserBookingsResponseDto, CreatorBookingsResponseDto } from '../dto-session/session-response.dto';
+import { SetAvailableHoursDto, GenerateSlotsDto, BookSlotDto, GetAvailableSlotsDto } from '../dto-session/available-hours.dto';
+import { AvailableSlotsResponseDto, AvailableHoursResponseDto } from '../dto-session/available-slots-response.dto';
 import { PromoService } from '../common/services/promo.service';
 import { PolicyService } from '../common/services/policy.service';
 import { FeeService } from '../common/services/fee.service';
@@ -533,6 +535,236 @@ export class SessionService {
   }
 
   /**
+   * Définir les heures de disponibilité pour une session
+   */
+  async setAvailableHours(sessionId: string, setAvailableHoursDto: SetAvailableHoursDto, userId: string): Promise<AvailableHoursResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut définir les heures de disponibilité');
+    }
+
+    // Mettre à jour les disponibilités récurrentes
+    session.recurringAvailability = setAvailableHoursDto.recurringAvailability.map(av => ({
+      id: new Types.ObjectId().toString(),
+      dayOfWeek: av.dayOfWeek,
+      startTime: av.startTime,
+      endTime: av.endTime,
+      slotDuration: av.slotDuration || 60,
+      isActive: av.isActive ?? true,
+      createdAt: new Date()
+    }));
+
+    // Mettre à jour les autres paramètres
+    session.autoGenerateSlots = setAvailableHoursDto.autoGenerateSlots ?? false;
+    session.advanceBookingDays = setAvailableHoursDto.advanceBookingDays || 30;
+
+    await session.save();
+
+    return this.transformToAvailableHoursResponseDto(session);
+  }
+
+  /**
+   * Générer les créneaux disponibles pour une session
+   */
+  async generateAvailableSlots(sessionId: string, generateSlotsDto: GenerateSlotsDto, userId: string): Promise<AvailableSlotsResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut générer les créneaux');
+    }
+
+    const startDate = new Date(generateSlotsDto.startDate);
+    const endDate = new Date(generateSlotsDto.endDate);
+
+    // Générer les créneaux
+    session.generateAvailableSlots(startDate, endDate);
+    await session.save();
+
+    return this.transformToAvailableSlotsResponseDto(session);
+  }
+
+  /**
+   * Obtenir les heures de disponibilité d'une session
+   */
+  async getAvailableHours(sessionId: string, userId: string): Promise<AvailableHoursResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que l'utilisateur est le créateur de la session
+    if (session.creatorId.toString() !== userId) {
+      throw new ForbiddenException('Seul le créateur de la session peut voir les heures de disponibilité');
+    }
+
+    return this.transformToAvailableHoursResponseDto(session);
+  }
+
+  /**
+   * Obtenir les créneaux disponibles pour une session
+   */
+  async getAvailableSlots(sessionId: string, getAvailableSlotsDto?: GetAvailableSlotsDto): Promise<AvailableSlotsResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    let startDate: Date | undefined;
+    let endDate: Date | undefined;
+
+    if (getAvailableSlotsDto?.startDate) {
+      startDate = new Date(getAvailableSlotsDto.startDate);
+    }
+    if (getAvailableSlotsDto?.endDate) {
+      endDate = new Date(getAvailableSlotsDto.endDate);
+    }
+
+    // Si aucune date n'est spécifiée, utiliser les 30 prochains jours
+    if (!startDate) {
+      startDate = new Date();
+    }
+    if (!endDate) {
+      endDate = new Date();
+      endDate.setDate(endDate.getDate() + (session.advanceBookingDays || 30));
+    }
+
+    // Générer les créneaux si nécessaire
+    if (session.autoGenerateSlots && session.recurringAvailability && session.recurringAvailability.length > 0) {
+      session.generateAvailableSlots(startDate, endDate);
+      await session.save();
+    }
+
+    return this.transformToAvailableSlotsResponseDto(session, startDate, endDate);
+  }
+
+  /**
+   * Réserver un créneau spécifique
+   */
+  async bookSlot(sessionId: string, bookSlotDto: BookSlotDto, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    // Vérifier que la session est active
+    if (!session.isActive) {
+      throw new BadRequestException('Cette session n\'est plus active');
+    }
+
+    // Vérifier que l'utilisateur n'est pas le créateur
+    if (session.creatorId.toString() === userId) {
+      throw new BadRequestException('Vous ne pouvez pas réserver votre propre session');
+    }
+
+    // Trouver le créneau
+    const slot = session.getSlot(bookSlotDto.slotId);
+    if (!slot) {
+      throw new NotFoundException('Créneau non trouvé');
+    }
+
+    if (!slot.isAvailable) {
+      throw new BadRequestException('Ce créneau n\'est plus disponible');
+    }
+
+    // Vérifier que la date est dans le futur
+    if (slot.startTime <= new Date()) {
+      throw new BadRequestException('Impossible de réserver un créneau dans le passé');
+    }
+
+    // Réserver le créneau
+    const success = session.bookSlot(bookSlotDto.slotId, userId);
+    if (!success) {
+      throw new BadRequestException('Impossible de réserver ce créneau');
+    }
+
+    // Créer une réservation traditionnelle pour la compatibilité
+    const booking = {
+      id: new Types.ObjectId().toString(),
+      userId: new Types.ObjectId(userId),
+      scheduledAt: slot.startTime,
+      status: 'confirmed' as const,
+      notes: bookSlotDto.notes,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    session.addBooking(booking);
+
+    // Si la session est payante, créer une commande
+    if (session.price && session.price > 0) {
+      const breakdown = await this.feeService.calculateForAmount(session.price, session.creatorId.toString());
+      await this.orderModel.create({
+        buyerId: new Types.ObjectId(userId),
+        creatorId: session.creatorId,
+        contentType: TrackableContentType.SESSION,
+        contentId: session._id.toString(),
+        amountDT: breakdown.amountDT,
+        platformPercent: breakdown.platformPercent,
+        platformFixedDT: breakdown.platformFixedDT,
+        platformFeeDT: breakdown.platformFeeDT,
+        creatorNetDT: breakdown.creatorNetDT,
+        status: 'paid'
+      });
+    }
+
+    await session.save();
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(session, community || undefined);
+  }
+
+  /**
+   * Annuler un créneau réservé
+   */
+  async cancelSlot(sessionId: string, slotId: string, userId: string): Promise<SessionResponseDto> {
+    const session = await this.sessionModel.findOne({ id: sessionId });
+    if (!session) {
+      throw new NotFoundException('Session non trouvée');
+    }
+
+    const slot = session.getSlot(slotId);
+    if (!slot) {
+      throw new NotFoundException('Créneau non trouvé');
+    }
+
+    // Vérifier que l'utilisateur peut annuler (créateur ou utilisateur qui a réservé)
+    if (session.creatorId.toString() !== userId && slot.bookedBy?.toString() !== userId) {
+      throw new ForbiddenException('Vous ne pouvez pas annuler ce créneau');
+    }
+
+    // Annuler le créneau
+    const success = session.cancelSlot(slotId);
+    if (!success) {
+      throw new BadRequestException('Impossible d\'annuler ce créneau');
+    }
+
+    // Annuler la réservation correspondante si elle existe
+    const correspondingBooking = session.bookings.find(booking => 
+      booking.scheduledAt.getTime() === slot.startTime.getTime() &&
+      booking.userId.toString() === userId
+    );
+
+    if (correspondingBooking) {
+      correspondingBooking.status = 'cancelled';
+      correspondingBooking.updatedAt = new Date();
+    }
+
+    await session.save();
+
+    const community = await this.communityModel.findOne({ id: session.communityId });
+    return this.transformToResponseDto(session, community || undefined);
+  }
+
+  /**
    * Transformer un document Session en DTO de réponse
    */
   private async transformToResponseDto(session: SessionDocument, community?: CommunityDocument | null): Promise<SessionResponseDto> {
@@ -582,6 +814,60 @@ export class SessionService {
       bookingsCount: session.getBookingsCount(),
       bookingsThisWeek: session.getBookingsThisWeek(),
       canBookMore: session.canBookMore()
+    };
+  }
+
+  /**
+   * Transformer un document Session en DTO de réponse pour les heures de disponibilité
+   */
+  private transformToAvailableHoursResponseDto(session: SessionDocument): AvailableHoursResponseDto {
+    return {
+      recurringAvailability: (session.recurringAvailability || []).map(av => ({
+        id: av.id,
+        dayOfWeek: av.dayOfWeek,
+        startTime: av.startTime,
+        endTime: av.endTime,
+        slotDuration: av.slotDuration,
+        isActive: av.isActive,
+        createdAt: av.createdAt.toISOString()
+      })),
+      autoGenerateSlots: session.autoGenerateSlots || false,
+      advanceBookingDays: session.advanceBookingDays || 30,
+      totalSlots: session.availableSlots?.length || 0,
+      availableSlots: session.availableSlots?.filter(slot => slot.isAvailable).length || 0
+    };
+  }
+
+  /**
+   * Transformer un document Session en DTO de réponse pour les créneaux disponibles
+   */
+  private transformToAvailableSlotsResponseDto(session: SessionDocument, startDate?: Date, endDate?: Date): AvailableSlotsResponseDto {
+    let slots = session.availableSlots || [];
+    
+    // Filtrer par plage de dates si spécifiée
+    if (startDate) {
+      slots = slots.filter(slot => slot.startTime >= startDate);
+    }
+    if (endDate) {
+      slots = slots.filter(slot => slot.startTime <= endDate);
+    }
+
+    const availableSlots = slots.filter(slot => slot.isAvailable);
+    const bookedSlots = slots.filter(slot => !slot.isAvailable);
+
+    return {
+      slots: slots.map(slot => ({
+        id: slot.id,
+        startTime: slot.startTime.toISOString(),
+        endTime: slot.endTime.toISOString(),
+        isAvailable: slot.isAvailable,
+        bookedBy: slot.bookedBy?.toString(),
+        bookedAt: slot.bookedAt?.toISOString(),
+        createdAt: slot.createdAt.toISOString()
+      })),
+      total: slots.length,
+      available: availableSlots.length,
+      booked: bookedSlots.length
     };
   }
 }

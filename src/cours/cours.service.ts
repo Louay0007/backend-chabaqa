@@ -33,6 +33,73 @@ export class CoursService {
   ) {}
 
   /**
+   * Récupérer la liste des cours avec pagination et filtres
+   */
+  async getCourses(page: number = 1, limit: number = 10, category?: string, niveau?: string, search?: string) {
+    const query: any = { isPublished: true };
+    
+    if (category) {
+      query.category = category;
+    }
+    
+    if (niveau) {
+      query.niveau = niveau;
+    }
+    
+    if (search) {
+      query.$or = [
+        { titre: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const skip = (page - 1) * limit;
+    
+    const [courses, total] = await Promise.all([
+      this.coursModel
+        .find(query)
+        .populate('creatorId', 'name email profile_picture')
+        .select('-sections -learningObjectives -requirements')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+      this.coursModel.countDocuments(query)
+    ]);
+    
+    const transformedCourses = courses.map(course => ({
+      id: course._id.toString(),
+      titre: course.titre,
+      description: course.description,
+      prix: course.prix,
+      devise: course.devise,
+      category: course.category,
+      niveau: course.niveau,
+      duree: course.duree,
+      creator: {
+        name: (course.creatorId as any)?.name || 'Unknown',
+        avatar: (course.creatorId as any)?.profile_picture || 'https://placehold.co/64x64?text=MM'
+      },
+      createdAt: course.createdAt,
+      image: course.thumbnail || 'https://placehold.co/400x300?text=Course'
+    }));
+    
+    return {
+      success: true,
+      message: 'Cours récupérés avec succès',
+      data: {
+        courses: transformedCourses,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    };
+  }
+
+  /**
    * Vérifie si un utilisateur est admin d'une communauté
    * @param userId - L'ObjectId de l'utilisateur (string)
    * @param communityIdentifier - Le slug OU l'ObjectId de la communauté

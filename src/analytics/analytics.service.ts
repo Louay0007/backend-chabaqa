@@ -40,6 +40,37 @@ export class AnalyticsService {
     return entry.data as T;
   }
 
+  async getCommunities(creatorId: string, from: Date, to: Date) {
+    const key = this.cacheKey(creatorId, from.toISOString(), to.toISOString(), 'communities');
+    const cached = this.getCache<any>(key);
+    if (cached) return cached;
+
+    // Get communities analytics
+    const communities = await this.dbConnection.db?.collection('communities').find({
+      createur: new Types.ObjectId(creatorId),
+      createdAt: { $gte: from, $lte: to }
+    }).toArray() || [];
+
+    const result = {
+      total: communities.length,
+      active: communities.filter(c => c.isActive).length,
+      members: communities.reduce((sum, c) => sum + (c.membersCount || 0), 0),
+      averageRating: communities.reduce((sum, c) => sum + (c.averageRating || 0), 0) / communities.length || 0,
+      categories: [...new Set(communities.map(c => c.category))],
+      communities: communities.map(c => ({
+        id: c._id,
+        name: c.name,
+        members: c.membersCount || 0,
+        rating: c.averageRating || 0,
+        category: c.category,
+        createdAt: c.createdAt
+      }))
+    };
+
+    this.setCache(key, result);
+    return result;
+  }
+
   async getOverview(creatorId: string, from: Date, to: Date, plan?: PlanTier) {
     if (!plan) {
       const sub = await this.subscriptionService.getMySubscription(creatorId);
